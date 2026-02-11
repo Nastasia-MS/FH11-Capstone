@@ -1,6 +1,9 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                               QPushButton, QComboBox, QGridLayout, QFrame, QProgressBar)
+                               QPushButton, QComboBox, QGridLayout, QFrame, QProgressBar, QFileDialog, QListWidget, QListWidgetItem)
 from PySide6.QtCore import Qt
+
+import os
+import numpy as np
 
 from widgets.training_chart import TrainingChartWidget
 
@@ -42,18 +45,64 @@ class MLTrainingTab(QWidget):
         subtitle.setProperty("class", "section-subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
+        # Dataset selection (support multiple folders / classes)
+        data_btn_layout = QHBoxLayout()
+        self.add_data_btn = QPushButton("Add Data Folder")
+        self.add_data_btn.clicked.connect(self.add_data_folder)
+        data_btn_layout.addWidget(self.add_data_btn)
+
+        self.remove_data_btn = QPushButton("Remove Selected")
+        self.remove_data_btn.clicked.connect(self.remove_selected_dataset)
+        self.remove_data_btn.setEnabled(False)
+        data_btn_layout.addWidget(self.remove_data_btn)
+
+        self.clear_data_btn = QPushButton("Clear All")
+        self.clear_data_btn.clicked.connect(self.clear_datasets)
+        self.clear_data_btn.setEnabled(False)
+        data_btn_layout.addWidget(self.clear_data_btn)
+
+        layout.addLayout(data_btn_layout)
+
+        # list of selected dataset folders (each folder => a class)
+        self.dataset_list = QListWidget()
+        self.dataset_list.itemSelectionChanged.connect(self.on_dataset_selection_changed)
+        layout.addWidget(self.dataset_list)
         
         # Model Architecture
         arch_label = QLabel("Model Architecture")
         layout.addWidget(arch_label)
-        self.arch_combo = QComboBox()
-        self.arch_combo.addItems([
-            "CNN (Convolutional Neural Network)",
-            "RNN (Recurrent Neural Network)",
-            "LSTM (Long Short-Term Memory)",
-            "Transformer"
-        ])
-        layout.addWidget(self.arch_combo)
+        self.model_combo = QComboBox()
+        # Provide a few TF-ready model options with default params
+        self.model_combo.addItems(["SimpleCNN", "TinyConv", "MLP"])
+        layout.addWidget(self.model_combo)
+
+        # Epochs and batch size controls
+        epoch_layout = QHBoxLayout()
+        epoch_label = QLabel("Epochs")
+        epoch_layout.addWidget(epoch_label)
+        from PySide6.QtWidgets import QSpinBox
+        self.epochs_spin = QSpinBox()
+        self.epochs_spin.setMinimum(1)
+        self.epochs_spin.setMaximum(1000)
+        self.epochs_spin.setValue(10)
+        epoch_layout.addWidget(self.epochs_spin)
+
+        batch_label = QLabel("Batch Size")
+        epoch_layout.addWidget(batch_label)
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setMinimum(1)
+        self.batch_spin.setMaximum(1024)
+        self.batch_spin.setValue(32)
+        epoch_layout.addWidget(self.batch_spin)
+
+        layout.addLayout(epoch_layout)
+
+        # store selected datasets: label -> list[filepaths]
+        self.datasets = {}
+
+        # trainer reference
+        self._trainer = None
+
         
         # Learning Rate
         lr_header = QHBoxLayout()
@@ -113,6 +162,8 @@ class MLTrainingTab(QWidget):
         self.train_btn = QPushButton("▶  Start Training")
         self.train_btn.setObjectName("primaryButton")
         self.train_btn.clicked.connect(self.start_training)
+        # disable until dataset selected
+        self.train_btn.setEnabled(False)
         layout.addWidget(self.train_btn)
         
         # Status label
@@ -122,6 +173,92 @@ class MLTrainingTab(QWidget):
         layout.addWidget(self.status_label)
         
         return panel
+
+    def add_data_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Data Folder", os.path.expanduser("~"))
+        if not folder:
+            return
+        label = os.path.basename(folder.rstrip(os.sep)) or folder
+        # ensure unique label
+        orig_label = label
+        i = 1
+        while label in self.datasets:
+            label = f"{orig_label}_{i}"
+            i += 1
+
+        files = self._gather_dataset_files(folder)
+        if not files:
+            self.status_label.setText("No supported files in selected folder")
+            return
+
+        self.datasets[label] = files
+        item = QListWidgetItem(f"{label} ({len(files)} files)")
+        item.setData(Qt.UserRole, label)
+        self.dataset_list.addItem(item)
+        self.clear_data_btn.setEnabled(True)
+        self._update_train_button_state()
+
+    def remove_selected_dataset(self):
+        items = self.dataset_list.selectedItems()
+        if not items:
+            return
+        for it in items:
+            label = it.data(Qt.UserRole)
+            if label in self.datasets:
+                del self.datasets[label]
+            row = self.dataset_list.row(it)
+            self.dataset_list.takeItem(row)
+        self.remove_data_btn.setEnabled(False)
+        if self.dataset_list.count() == 0:
+            self.clear_data_btn.setEnabled(False)
+        self._update_train_button_state()
+
+    def clear_datasets(self):
+        self.datasets.clear()
+        self.dataset_list.clear()
+        self.remove_data_btn.setEnabled(False)
+        self.clear_data_btn.setEnabled(False)
+        self._update_train_button_state()
+
+    def on_dataset_selection_changed(self):
+        self.remove_data_btn.setEnabled(len(self.dataset_list.selectedItems()) > 0)
+
+    def _update_train_button_state(self):
+        # enable training only when there are at least two classes with files
+        valid_classes = [k for k, v in self.datasets.items() if v]
+        self.train_btn.setEnabled(len(valid_classes) >= 2)
+
+    def _gather_dataset_files(self, folder):
+        """Return list of candidate data files in folder (.npy, .npz, .csv)."""
+        exts = ('.npy', '.npz', '.csv')
+        files = []
+        try:
+            for entry in os.listdir(folder):
+                path = os.path.join(folder, entry)
+                if os.path.isfile(path) and entry.lower().endswith(exts):
+                    files.append(path)
+        except Exception as e:
+            print(f"Error listing dataset folder: {e}")
+        return sorted(files)
+
+    def _load_sample_from_file(self, path):
+        """Load a sample from file. Supports .npy/.npz/.csv."""
+        try:
+            if path.lower().endswith('.npy'):
+                data = np.load(path, allow_pickle=True)
+                return data
+            if path.lower().endswith('.npz'):
+                data = np.load(path, allow_pickle=True)
+                # return first array inside
+                if isinstance(data, np.lib.npyio.NpzFile):
+                    keys = list(data.keys())
+                    return data[keys[0]] if keys else None
+            if path.lower().endswith('.csv'):
+                data = np.loadtxt(path, delimiter=',')
+                return data
+        except Exception as e:
+            print(f"Failed to load sample {path}: {e}")
+        return None
     
     def create_charts_panel(self):
         """Create the charts visualization panel"""
@@ -203,17 +340,44 @@ class MLTrainingTab(QWidget):
     
     def start_training(self):
         """Handle training start button click"""
-        
+        # Lazy import to avoid breaking app if torch not installed
+        try:
+            from backend.trainer import TrainerThread
+        except ImportError as e:
+            self.status_label.setText(f"PyTorch not installed: {e}")
+            print(f"ERROR: Could not import TrainerThread: {e}")
+            return
+
+        # Require at least two classes (folders) to train a classifier
+        if not self.datasets or len(self.datasets) < 2:
+            self.status_label.setText("Add at least two data folders (classes) to train")
+            return
+
+        # Build file -> label mapping
+        labels = list(self.datasets.keys())
+        file_label_pairs = []
+        for idx, label in enumerate(labels):
+            files = self.datasets.get(label, [])
+            for f in files:
+                file_label_pairs.append((f, idx))
+
+        if not file_label_pairs:
+            self.status_label.setText("No supported files found in datasets")
+            return
+
+        # start TrainerThread
+        model_name = self.model_combo.currentText()
+        epochs = int(self.epochs_spin.value())
+        batch_size = int(self.batch_spin.value())
+
+        self._trainer = TrainerThread(file_label_pairs, labels, model_name=model_name, epochs=epochs, batch_size=batch_size)
+        self._trainer.progress.connect(self.update_training_progress)
+        self._trainer.finished.connect(self.on_training_finished)
+
         self.status_label.setText("Training...")
         self.train_btn.setEnabled(False)
-        
-        # Placeholder: would connect to actual training logic
-        print("Training started...")
-        
-        # Example: simulate some progress
-        # In real implementation, connect to actual training signals/callbacks
-        self.progress_bar.setValue(0)
-        self.progress_value.setText("Epoch 0/10")
+        self._trainer.start()
+        print(f"Trainer started: model={model_name}, epochs={epochs}, batch_size={batch_size}")
     
     def update_training_progress(self, epoch, total_epochs, train_loss, val_loss, train_acc, val_acc):
         """Update the training progress and charts
@@ -239,3 +403,16 @@ class MLTrainingTab(QWidget):
             self.status_label.setText("Training Complete")
             self.train_btn.setEnabled(True)
             self.train_btn.setText("▶  Start Training")
+
+    def on_training_finished(self, model_path):
+        if model_path:
+            self.status_label.setText(f"Training finished — saved: {model_path}")
+            print(f"Model saved to: {model_path}")
+        else:
+            self.status_label.setText("Training finished (no model saved)")
+        self.train_btn.setEnabled(True)
+        # Properly quit and wait for thread to finish
+        if self._trainer:
+            self._trainer.quit()
+            self._trainer.wait()
+            self._trainer = None
