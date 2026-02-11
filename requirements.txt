@@ -1,0 +1,5 @@
+torch
+numpy
+PySide6
+matplotlib
+scikit-learn
