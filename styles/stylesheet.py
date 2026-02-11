@@ -72,14 +72,19 @@ def get_stylesheet():
             border-bottom: 2px solid #111827;
             color: #111827;
         }
+        /* Combo box / dropdown improvements for higher contrast */
         QComboBox {
-            background-color: white;
-            border: 1px solid #e5e7eb;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
             border-radius: 6px;
             padding: 8px 12px;
             font-size: 13px;
-            color: #1f2937;
+            color: #111827;
             min-height: 20px;
+        }
+        QComboBox:hover, QComboBox:focus {
+            border-color: #111827;
+            background-color: #ffffff;
         }
         QComboBox::drop-down {
             border: none;
@@ -93,10 +98,33 @@ def get_stylesheet():
             margin-right: 8px;
         }
         QComboBox QAbstractItemView {
-            background-color: white;
-            border: 1px solid #e5e7eb;
-            selection-background-color: #f3f4f6;
-            selection-color: #111827;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            selection-background-color: #111827;
+            selection-color: #ffffff;
+            color: #111827;
+            padding: 4px;
+        }
+        QComboBox QAbstractItemView::item {
+            padding: 6px 10px;
+        }
+        QComboBox QAbstractItemView::item:selected {
+            background-color: #111827;
+            color: #ffffff;
+        }
+        /* Menus and list views (covering other option widgets) */
+        QMenu, QListView {
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #111827;
+        }
+        QMenu::item, QListView::item {
+            padding: 6px 12px;
+            color: #111827;
+        }
+        QMenu::item:selected, QListView::item:selected {
+            background-color: #111827;
+            color: #ffffff;
         }
         QDoubleSpinBox {
             background-color: white;
