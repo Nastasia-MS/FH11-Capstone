@@ -1,18 +1,34 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog,
                                QPushButton, QFrame, QTableWidget, QTableWidgetItem, 
-                               QHeaderView, QSlider, QGridLayout)
+                               QHeaderView, QSlider, QGridLayout, QComboBox, QDoubleSpinBox)
 from PySide6.QtCore import Qt
 
 from widgets.toggle_switch import ToggleSwitch
 from widgets.noise_spectrum import NoiseSpectrumWidget
+from widgets.waveform_plots import PlottingWidget
+from backend.augmentation import AugmentationPipeline, AWGNAugmentation, ScalarAmplitudeAndPhaseShift
+import numpy as np
 
 
 class ChannelNoiseTab(QWidget):
     """Channel configuration and noise settings tab"""
     
-    def __init__(self):
+    def __init__(self, dataset_manager):
         super().__init__()
+        self.dataset_manager = dataset_manager
+
+        # Augmentation params
+        self.snr_db = 20.0
+        self.amplitude = 1.0
+        self.phase_deg = 0.0
+        self.awgn_enabled = True
+        self.amp_phase_enabled = False
+
         self.setup_ui()
+        self.refresh_dataset_list()
+
+        if self.dataset_manager.get_active():
+            self.display_original_signal()
     
     def setup_ui(self):
         """Initialize the UI components"""
@@ -21,15 +37,14 @@ class ChannelNoiseTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Left panel - Channel Configuration
-        left_panel = self.create_channel_panel()
+        left_panel = self.create_controls_panel()
         layout.addWidget(left_panel, 1)
         
         # Right panel - Noise Configuration and Spectrum
-        right_panel = self.create_noise_panel()
-        layout.addWidget(right_panel, 1)
+        right_panel = self.create_visualization_panel()
+        layout.addWidget(right_panel, 2)
     
-    def create_channel_panel(self):
-        """Create the channel configuration panel"""
+    def create_controls_panel(self):
         panel = QFrame()
         panel.setObjectName("card")
         layout = QVBoxLayout(panel)
@@ -37,233 +52,162 @@ class ChannelNoiseTab(QWidget):
         layout.setSpacing(20)
         
         # Title
-        title = QLabel("📡 Channel Configuration")
+        title = QLabel("📡 Channel Augmentation")
         title.setProperty("class", "section-title")
-        subtitle = QLabel("Configure individual channel parameters")
+        subtitle = QLabel("Apply channel effects and noise")
         subtitle.setProperty("class", "section-subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        
-        # Channel table
-        table = QTableWidget(4, 4)
-        table.setHorizontalHeaderLabels(["Channel", "Status", "Gain (dB)", "SNR (dB)"])
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(50)
-        table.setSelectionMode(QTableWidget.NoSelection)
-        table.setMaximumHeight(280)
-        table.setShowGrid(False)
-        table.setEditTriggers(QTableWidget.NoEditTriggers)
-        
-        channels_data = [
-            ("Channel 1", True, "80 dB", "25.5 dB", False),
-            ("Channel 2", True, "75 dB", "28.3 dB", False),
-            ("Channel 3", False, "60 dB", "22.1 dB", True),
-            ("Channel 4", True, "85 dB", "30.2 dB", False)
-        ]
-        
-        for row, (channel, enabled, gain, snr, is_low_snr) in enumerate(channels_data):
-            # Channel name
-            channel_widget = QWidget()
-            channel_layout = QHBoxLayout(channel_widget)
-            channel_layout.setContentsMargins(12, 0, 8, 0)
-            channel_layout.setAlignment(Qt.AlignLeft)
-            channel_label = QLabel(channel)
-            channel_label.setStyleSheet("font-size: 13px; color: #1f2937; font-weight: 500;")
-            channel_layout.addWidget(channel_label)
-            channel_layout.addStretch()
-            table.setCellWidget(row, 0, channel_widget)
-            
-            # Status toggle
-            status_widget = QWidget()
-            status_layout = QHBoxLayout(status_widget)
-            status_layout.setContentsMargins(8, 0, 8, 0)
-            status_layout.setAlignment(Qt.AlignLeft)
-            toggle = ToggleSwitch()
-            toggle.setChecked(enabled)
-            status_layout.addWidget(toggle)
-            status_layout.addStretch()
-            table.setCellWidget(row, 1, status_widget)
-            
-            # Gain badge
-            gain_widget = QWidget()
-            gain_layout = QHBoxLayout(gain_widget)
-            gain_layout.setContentsMargins(8, 0, 8, 0)
-            gain_layout.setAlignment(Qt.AlignLeft)
-            gain_label = QLabel(gain)
-            gain_label.setStyleSheet("background-color: #111827; color: white; border-radius: 12px; padding: 6px 14px; font-size: 13px; font-weight: 600;")
-            gain_label.setAlignment(Qt.AlignCenter)
-            gain_layout.addWidget(gain_label)
-            gain_layout.addStretch()
-            table.setCellWidget(row, 2, gain_widget)
-            
-            # SNR badge
-            snr_widget = QWidget()
-            snr_layout = QHBoxLayout(snr_widget)
-            snr_layout.setContentsMargins(8, 0, 8, 0)
-            snr_layout.setAlignment(Qt.AlignLeft)
-            snr_label = QLabel(snr)
-            if is_low_snr:
-                snr_label.setStyleSheet("background-color: #ef4444; color: white; border-radius: 12px; padding: 6px 14px; font-size: 13px; font-weight: 600;")
-            else:
-                snr_label.setStyleSheet("background-color: #111827; color: white; border-radius: 12px; padding: 6px 14px; font-size: 13px; font-weight: 600;")
-            snr_label.setAlignment(Qt.AlignCenter)
-            snr_layout.addWidget(snr_label)
-            snr_layout.addStretch()
-            table.setCellWidget(row, 3, snr_widget)
-        
-        layout.addWidget(table)
-        
-        # Info box
-        info_box = QFrame()
-        info_box.setObjectName("infoBox")
-        info_layout = QHBoxLayout(info_box)
-        info_icon = QLabel("ⓘ")
-        info_icon.setStyleSheet("font-size: 16px; color: #3b82f6;")
-        info_text = QLabel("<b>Active Channels</b><br/>3 of 4 channels enabled")
-        info_text.setProperty("class", "section-subtitle")
-        info_layout.addWidget(info_icon)
-        info_layout.addWidget(info_text)
-        info_layout.addStretch()
-        layout.addWidget(info_box)
-        
-        layout.addStretch()
-        
-        return panel
-    
-    def create_noise_panel(self):
-        """Create the noise configuration and visualization panel"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(20)
-        
-        # Noise Configuration Card
-        noise_card = self.create_noise_config_card()
-        layout.addWidget(noise_card)
-        
-        # Noise Power Spectrum Card
-        spectrum_card = self.create_spectrum_card()
-        layout.addWidget(spectrum_card)
-        
-        return panel
-    
-    def create_noise_config_card(self):
-        """Create the noise configuration card"""
-        card = QFrame()
-        card.setObjectName("card")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-        
-        # Header
-        header = QHBoxLayout()
-        title_layout = QVBoxLayout()
-        title = QLabel("🔊 Noise Configuration")
-        title.setProperty("class", "card-title")
-        subtitle = QLabel("Configure noise and interference parameters")
-        subtitle.setProperty("class", "section-subtitle")
-        title_layout.addWidget(title)
-        title_layout.addWidget(subtitle)
-        title_layout.setSpacing(2)
-        header.addLayout(title_layout)
-        layout.addLayout(header)
-        
-        # Noise Level Slider
-        noise_slider_layout = self.create_slider_control("Noise Level", 30, "dBm", -50, 0)
-        layout.addLayout(noise_slider_layout)
-        
+
+        # Dataset Selection
+        dataset_selection = QVBoxLayout()
+        dataset_label = QLabel("Select Dataset")
+        dataset_label.setProperty("class", "section-title")
+        dataset_selection.addWidget(dataset_label)
+
+        # Dataset dropdown
+        self.dataset_combo = QComboBox()
+        self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
+        dataset_selection.addWidget(self.dataset_combo)
+
+        # Upload and Refresh buttons
+        dataset_buttons = QHBoxLayout()
+        upload_btn = QPushButton("Upload Dataset")
+        upload_btn.clicked.connect(self.upload_dataset)
+        dataset_buttons.addWidget(upload_btn)
+
+        refresh_btn = QPushButton("Refresh Datasets")
+        refresh_btn.clicked.connect(self.refresh_dataset_list)
+        dataset_buttons.addWidget(refresh_btn)
+        dataset_selection.addLayout(dataset_buttons)
+
+        layout.addLayout(dataset_selection)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator)
+
+        # AWGN Configuration
+        awgn_section = QVBoxLayout()
+
         # AWGN Toggle
-        awgn_layout = QHBoxLayout()
+        awgn_header = QHBoxLayout()
         awgn_left = QVBoxLayout()
         awgn_title = QLabel("AWGN (Additive White Gaussian Noise)")
         awgn_title.setProperty("class", "section-title")
-        awgn_desc = QLabel("Enable white noise generation")
+        awgn_desc = QLabel("Add white Gausian noise")
         awgn_desc.setProperty("class", "section-subtitle")
         awgn_left.addWidget(awgn_title)
         awgn_left.addWidget(awgn_desc)
-        awgn_layout.addLayout(awgn_left)
-        awgn_layout.addStretch()
-        awgn_toggle = ToggleSwitch()
-        awgn_toggle.setChecked(True)
-        awgn_layout.addWidget(awgn_toggle)
-        layout.addLayout(awgn_layout)
+        awgn_section.addLayout(awgn_left)
+        awgn_section.addStretch()
+        self.awgn_toggle = ToggleSwitch()
+        self.awgn_toggle.setChecked(self.awgn_enabled)
+        self.awgn_toggle.toggled.connect(lambda checked: setattr(self, 'awgn_enabled', checked))
+        awgn_header.addWidget(self.awgn_toggle)
+        awgn_section.addLayout(awgn_header)
+
+        # SNR Slider
+        snr_slider_layout = self.create_slider_control(
+            "SNR (dB)", self.snr_db, "dB", -10, 40, "snr_db"
+        )
+        awgn_section.addLayout(snr_slider_layout)
+
+        layout.addLayout(awgn_section)
+
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.HLine)
+        separator2.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator2)
+
+        # Amplitude & Phase Shift Configuration
+        amp_phase_section = QVBoxLayout()
+
+        # Amplitude/Phase Toggle
+        amp_phase_header = QHBoxLayout()
+        amp_phase_left = QVBoxLayout()
+        amp_phase_title = QLabel("Amplitude & Phase Shift")
+        amp_phase_title.setProperty("class", "section-title")
+        amp_phase_desc = QLabel("Scale amplitude and rotate phase")
+        amp_phase_desc.setProperty("class", "section-subtitle")
+        amp_phase_left.addWidget(amp_phase_title)
+        amp_phase_left.addWidget(amp_phase_desc)
+        amp_phase_header.addLayout(amp_phase_left)
+        amp_phase_header.addStretch()
+        self.amp_phase_toggle = ToggleSwitch()
+        self.amp_phase_toggle.setChecked(self.amp_phase_enabled)
+        self.amp_phase_toggle.toggled.connect(lambda checked: setattr(self, 'amp_phase_enabled', checked))
+        amp_phase_header.addWidget(self.amp_phase_toggle)
+        amp_phase_section.addLayout(amp_phase_header)
+
+        # Amplitude Control
+        amp_label = QLabel("Amplitude Scaling")
+        amp_phase_section.addWidget(amp_label)
+        self.amplitude_spin = QDoubleSpinBox()
+        self.amplitude_spin.setRange(0.0, 5.0)
+        self.amplitude_spin.setSingleStep(0.1)
+        self.amplitude_spin.setValue(self.amplitude)
+        self.amplitude_spin.valueChanged.connect(lambda v: setattr(self, 'amplitude', v))
+        amp_phase_section.addWidget(self.amplitude_spin)
         
-        # Multipath Fading Toggle
-        multipath_layout = QHBoxLayout()
-        multipath_left = QVBoxLayout()
-        multipath_title = QLabel("Multipath Fading")
-        multipath_title.setProperty("class", "section-title")
-        multipath_desc = QLabel("Simulate multipath interference")
-        multipath_desc.setProperty("class", "section-subtitle")
-        multipath_left.addWidget(multipath_title)
-        multipath_left.addWidget(multipath_desc)
-        multipath_layout.addLayout(multipath_left)
-        multipath_layout.addStretch()
-        multipath_toggle = ToggleSwitch()
-        multipath_toggle.setChecked(False)
-        multipath_layout.addWidget(multipath_toggle)
-        layout.addLayout(multipath_layout)
+        # Phase Control
+        phase_label = QLabel("Phase Shift (degrees)")
+        amp_phase_section.addWidget(phase_label)
+        self.phase_spin = QDoubleSpinBox()
+        self.phase_spin.setRange(-180.0, 180.0)
+        self.phase_spin.setSingleStep(5.0)
+        self.phase_spin.setValue(self.phase_deg)
+        self.phase_spin.valueChanged.connect(lambda v: setattr(self, 'phase_deg', v))
+        amp_phase_section.addWidget(self.phase_spin)
+
+        layout.addLayout(amp_phase_section)
         
-        # Apply button
-        apply_btn = QPushButton("Apply Noise Settings")
+        layout.addStretch()
+
+        # Apply Augmentation Button
+        apply_btn = QPushButton("Apply Augmentations")
         apply_btn.setObjectName("primaryButton")
+        apply_btn.clicked.connect(self.apply_augmentations)
         layout.addWidget(apply_btn)
+
+        # Save Augmented Dataset Button
+        save_btn = QPushButton("Save Augmented Dataset")
+        save_btn.clicked.connect(self.save_augmented_dataset)
+        layout.addWidget(save_btn)
         
-        return card
+        return panel
     
-    def create_spectrum_card(self):
-        """Create the noise power spectrum card"""
-        card = QFrame()
-        card.setObjectName("card")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+    def create_visualization_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
         
-        # Header
-        title = QLabel("Noise Power Spectrum")
-        title.setProperty("class", "card-title")
-        subtitle = QLabel("Frequency distribution of noise components")
-        subtitle.setProperty("class", "section-subtitle")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        # Original Signal Card
+        comparison_card = QFrame()
+        comparison_card.setObjectName("card")
+        comparison_layout = QVBoxLayout(comparison_card)
+        comparison_layout.setContentsMargins(24, 24, 24, 24)
         
-        # Spectrum visualization
-        spectrum_widget = NoiseSpectrumWidget()
-        layout.addWidget(spectrum_widget)
+        comparison_title = QLabel("Clean vs Augmented Signal")
+        comparison_title.setProperty("class", "card-title")
+        comparison_layout.addWidget(comparison_title)
         
-        # Stats
-        stats_layout = QGridLayout()
-        stats_layout.setSpacing(20)
+        from widgets.comparison_widget import ComparisonWidget
+        self.comparison_plot = ComparisonWidget()
+        comparison_layout.addWidget(self.comparison_plot)
+
+        layout.addWidget(comparison_card)
         
-        stats = [
-            ("Total Noise Power", "170 dBm"),
-            ("Bandwidth", "60 Hz"),
-            ("Noise Figure", "5.2 dB")
-        ]
-        
-        for i, (label, value) in enumerate(stats):
-            stat_container = QVBoxLayout()
-            stat_label = QLabel(label)
-            stat_label.setProperty("class", "stat-label")
-            stat_value = QLabel(value)
-            stat_value.setProperty("class", "stat-value")
-            stat_container.addWidget(stat_label)
-            stat_container.addWidget(stat_value)
-            stats_layout.addLayout(stat_container, 0, i)
-        
-        layout.addLayout(stats_layout)
-        
-        return card
+        return panel
     
-    def create_slider_control(self, label, value, unit, min_val, max_val):
+    def create_slider_control(self, label, value, unit, min_val, max_val, attr_name):
         """Create a slider control with label and value display"""
         container = QVBoxLayout()
         container.setSpacing(8)
         
         # Label and value
         header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
         label_widget = QLabel(label)
         value_label = QLabel(f"{value} {unit}")
         value_label.setProperty("class", "stat-value")
@@ -279,10 +223,157 @@ class ChannelNoiseTab(QWidget):
         slider = QSlider(Qt.Horizontal)
         slider.setMinimum(min_val)
         slider.setMaximum(max_val)
-        slider.setValue(value)
-        slider.valueChanged.connect(lambda v, lbl=value_label, u=unit: lbl.setText(f"{v} {u}"))
+        slider.setValue(int(value))
+
+        def update_value(v):
+            value_label.setText(f"{v} {unit}")
+            setattr(self, attr_name, float(v))
+
+        slider.valueChanged.connect(update_value)
         container.addWidget(slider)
         
         container.addSpacing(8)
         
         return container
+    
+    def on_dataset_changed(self, name: str):
+        if name and name != "No datasets loaded":
+            self.dataset_manager.set_active(name)
+            self.display_original_signal()
+
+    def upload_dataset(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open Dataset", "", "NumPy Files (*.npy);;All Files (*)")
+
+        if not filepath:
+            return
+        
+        try:
+            signal = np.load(filepath)
+
+            from pathlib import Path
+            name = Path(filepath).stem
+
+            fs = 8e6
+            metadata = {
+                'source': 'uploaded',
+                'filepath': filepath
+            }
+
+            self.dataset_manager.add_dataset(name, signal, fs, metadata)
+            self.refresh_dataset_list()
+
+            print("Uploaded dataset: {name}")
+
+        except Exception as e:
+            print(f"Failed to upload dataset: {e}")
+
+    def refresh_dataset_list(self):
+        self.dataset_combo.clear()
+        datasets = self.dataset_manager.list_datasets()
+
+        if datasets:
+            self.dataset_combo.addItems(datasets)
+            active = self.dataset_manager.active_dataset
+            if active and active in datasets:
+                self.dataset_combo.setCurrentText(active)
+        else:
+            self.dataset_combo.addItem("No datasets loaded")
+
+        print("Dataset list refreshed: {datasets}")
+
+    def display_original_signal(self):
+        dataset = self.dataset_manager.get_active()
+        if dataset is None:
+            print("No active dataset to display")
+            return
+        
+        self.clean_signal = dataset['signal']
+        self.clean_fs = dataset['fs']
+        self.clean_metadata = dataset.get('metadata', {})
+
+    def apply_augmentations(self):
+        if not hasattr(self, 'clean_signal'):
+            print("No dataset selected to augment.")
+            return
+        
+        signal = self.clean_signal
+        fs = self.clean_fs
+
+        pipeline = AugmentationPipeline()
+
+        if self.awgn_enabled:
+            pipeline.add(AWGNAugmentation(snr_db=self.snr_db))
+
+        if self.amp_phase_enabled:
+            phase_rad = np.deg2rad(self.phase_deg)
+            pipeline.add(ScalarAmplitudeAndPhaseShift(amplitude=self.amplitude, phi=phase_rad))
+
+        augmented_signal = pipeline.apply(signal, fs)
+
+        # Get metadata for constellation plot
+        metadata = self.clean_metadata
+        fc = metadata.get('fc', None)
+        Tsymb = metadata.get('Tsymb', None)
+        modulation = metadata.get('modulation', None)
+        
+        # Calculate sps if available
+        sps = None
+        if Tsymb is not None:
+            sps = int(fs * Tsymb)
+        
+        # Display comparison
+        self.comparison_plot.plot_comparison(
+            clean_signal=signal,
+            augmented_signal=augmented_signal,
+            fs=fs,
+            fc=fc,
+            sps=sps,
+            modulation=modulation
+        )
+        
+        # Store augmented signal temporarily
+        self.last_augmented_signal = augmented_signal
+        self.last_augmented_fs = fs
+    
+
+    def save_augmented_dataset(self):
+        if not hasattr(self, 'last_augmented_signal'):
+            print("No augmented signal to save")
+            return
+        
+        active_name = self.dataset_manager.active_dataset
+        if not active_name:
+            active_name = "dataset"
+
+        aug_name = f"{active_name}_augmented"
+        counter = 1
+        while aug_name in self.dataset_manager.datasets:
+            aug_name = f"{active_name}_augmented_{counter}"
+            counter += 1
+
+        # Get original metadata
+        original_dataset = self.dataset_manager.get_active()
+        metadata = original_dataset['metadata'].copy() if original_dataset else {}
+
+        # Add augmentation info to metadata
+        metadata['augmented'] = True
+        metadata['base_dataset'] = active_name
+        metadata['augmentations'] = []
+        if self.awgn_enabled:
+            metadata['augmentations'].append(f"AWGN(snr={self.snr_db}dB)")
+        if self.amp_phase_enabled:
+            metadata['augmentations'].append(f"AmpPhase(amp={self.amplitude}, phi={self.phase_deg}deg)")
+
+        self.dataset_manager.add_dataset(
+            aug_name,
+            self.last_augmented_signal,
+            self.last_augmented_fs,
+            metadata
+        )
+
+        self.refresh_dataset_list()
+        print(f"Saved augmented dataset: {aug_name}")
+
+    
+
+    

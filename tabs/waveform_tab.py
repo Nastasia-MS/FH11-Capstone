@@ -7,14 +7,16 @@ from widgets.constellation import ConstellationWidget
 from widgets.power_spectrum import PowerSpectrumWidget
 from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 import numpy as np
+from datetime import datetime
 
 
 class WaveformSelectionTab(QWidget):
     """Waveform configuration and visualization tab"""
-    def __init__(self, matlab_engine, parent=None):
+    def __init__(self, matlab_engine, dataset_manager, parent=None):
         super().__init__(parent)
         self.matlab = matlab_engine
-        
+        self.dataset_manager = dataset_manager
+
         # Core parameters (defaults chosen to be valid: fc < fs/2)
         self.fc = 1e6 # Hz
         self.fs = 8e6
@@ -152,10 +154,13 @@ class WaveformSelectionTab(QWidget):
 
         #layout.addStretch()
 
-
         generate_btn = QPushButton("▶ Generate Dataset")
         generate_btn.clicked.connect(self.generate_dataset)
         layout.addWidget(generate_btn)
+
+        save_btn = QPushButton("💾 Save to Dataset Manager")
+        save_btn.clicked.connect(self.save_to_dataset_manager)
+        layout.addWidget(save_btn)
         
         return panel
     
@@ -219,7 +224,6 @@ class WaveformSelectionTab(QWidget):
         data = self.current_data
         fs = self.current_fs
 
-
         t = np.arange(len(data)) / fs * 1e6
         ft = np.fft.fft(data)
         freqs = np.fft.fftfreq(len(data), 1 / fs) * 1e-6
@@ -262,7 +266,6 @@ class WaveformSelectionTab(QWidget):
         if abs(sps - round(sps)) > 1e-9:
             raise ValueError(f"Invalid parameters: fs * Tsymb = {sps:.6f} must be an integer (samples per symbol)")
 
-
         from backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)
 
@@ -286,12 +289,31 @@ class WaveformSelectionTab(QWidget):
         self.update_waveform_plots()
 
 
-    def save_configuration(self):
-        """Handle save configuration button click"""
-        print("Save Configuration clicked")
-        # In real implementation: save to JSON
-    
-    def export_samples(self):
-        """Handle export samples button click"""
-        print("Export Samples clicked")
-        # In real implementation: export data
+    def save_to_dataset_manager(self):
+        if self.current_data is None:
+            print("No waveform generated yet to save.")
+            return
+        
+        timestamp = datetime.now().isoformat()
+        name = f"{self.current_modulation}_{self.M}_{timestamp}"
+
+        metadata = {
+            'modulation': self.current_modulation,
+            'M': self.M,
+            'fc': self.fc,
+            'Tsymb': self.Tsymb,
+            'Nsymb': self.Nsymb,
+            'alpha': self.alpha,
+            'span': self.span,
+            'pulse_shape': self.pulse_shape_combo.currentText(),
+            'source': 'generated'
+        }
+
+        self.dataset_manager.add_dataset(
+            name = name,
+            signal = self.current_data,
+            fs = self.current_fs,
+            metadata = metadata
+        )
+
+        print(f"Saved to Dataset Manager as '{name}'")

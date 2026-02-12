@@ -11,6 +11,9 @@ from tabs.inference_tab import InferenceResultsTab
 from styles.stylesheet import get_stylesheet
 
 from backend.matlab_engine import MatlabEngine
+from backend.dataset_manager import DatasetManager
+
+# TODO: waveform_tab and channel_tab appear to share 2 of the same functions
 
 class SignalDashboard(QMainWindow):
     def __init__(self):
@@ -29,7 +32,7 @@ class SignalDashboard(QMainWindow):
         main_layout.setSpacing(20)
         
         # Header
-        self.create_header(main_layout)
+        #self.create_header(main_layout)
         
         # Tab navigation
         self.create_tab_navigation(main_layout)
@@ -55,11 +58,15 @@ class SignalDashboard(QMainWindow):
         else:
             print("MATLAB engine unavailable — waveform generation will be disabled. Install MATLAB and the MATLAB Engine for Python, or call MatlabEngine.start() to try starting it.")
         
+        # Initialize Dataset Manager (shared across tabs)
+        print("Initializing Dataset Manager...")
+        self.dataset_manager = DatasetManager()
+        
         # Add all tabs
-        self.waveform_tab = WaveformSelectionTab(self.matlab)
+        self.waveform_tab = WaveformSelectionTab(self.matlab, self.dataset_manager)
         self.content_stack.addWidget(self.waveform_tab)
         
-        self.channel_tab = ChannelNoiseTab()
+        self.channel_tab = ChannelNoiseTab(self.dataset_manager)
         self.content_stack.addWidget(self.channel_tab)
         
         self.ml_training_tab = MLTrainingTab()
