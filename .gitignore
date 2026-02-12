@@ -1,6 +1,7 @@
 
 # Virtual environment
 venv/
+.venv/
 
 # Byte-compiled / cache
 __pycache__/
@@ -9,3 +10,5 @@ __pycache__/
 # macOS
 .DS_Store
 
+# data folder
+data/

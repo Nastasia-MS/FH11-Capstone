@@ -106,23 +106,41 @@ class DatasetManager:
         return config
     
     def save_config(self, name: str, filepath: str):
-        """Save dataset metadata to JSON config file"""
+        """Save dataset metadata to JSON config file.
+
+        If the metadata contains an 'augmentation_config' dict (e.g. the
+        CLIP_datagen stochastic config), it is serialized directly so the
+        resulting JSON is self-contained and can reproduce the augmentation.
+        """
         dataset = self.get_dataset(name)
         if dataset is None:
             raise ValueError(f"Dataset '{name}' not found")
-        
+
+        metadata = dataset['metadata']
+
         config = {
             'name': name,
             'fs': dataset['fs'],
-            'metadata': dataset['metadata'],
+            'metadata': {},
             'timestamp': dataset['timestamp'],
-            'signal_shape': dataset['signal'].shape,
-            'signal_dtype': str(dataset['signal'].dtype)
+            'signal_shape': list(dataset['signal'].shape),
+            'signal_dtype': str(dataset['signal'].dtype),
         }
-        
+
+        # Serialize metadata, handling numpy types and nested dicts
+        for k, v in metadata.items():
+            if isinstance(v, np.ndarray):
+                config['metadata'][k] = v.tolist()
+            elif isinstance(v, (np.integer,)):
+                config['metadata'][k] = int(v)
+            elif isinstance(v, (np.floating,)):
+                config['metadata'][k] = float(v)
+            else:
+                config['metadata'][k] = v
+
         with open(filepath, 'w') as f:
-            json.dump(config, f, indent=2)
-        
+            json.dump(config, f, indent=2, default=str)
+
         print(f"✓ Saved config for '{name}' to {filepath}")
     
     def get_info(self, name: str) -> Optional[dict]:

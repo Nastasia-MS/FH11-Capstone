@@ -9,7 +9,7 @@ class WaveformPipeline:
         self.matlab_engine = matlab_engine
 
     def generate(self, *, fs, Tsymb, Nsymb, fc, M, modulation,
-                 var, alpha, span, pulse_shape):
+                 var, alpha, span, pulse_shape, output_type="passband"):
         waveform = Waveform(
             fs=fs,
             Tsymb=Tsymb,
@@ -22,6 +22,7 @@ class WaveformPipeline:
             alpha=alpha,
             span=span,
             pulse_shape=pulse_shape,
+            output_type=output_type,
         )
 
         waveform.generate_data()
@@ -31,17 +32,11 @@ class WaveformPipeline:
         T = len(data) / fs
         t = np.linspace(0, T, len(data))
 
-        if self.matlab_engine is None or not getattr(self.matlab_engine, 'is_available', lambda: False)():
-            raise RuntimeError(
-                "MATLAB engine unavailable — waveform generation and spectrum analysis require MATLAB."
-            )
-
-        try:
-            freqs, ft = self.matlab_engine.eng.plotspec_gui(data, 1 / fs, nargout=2)
-            freqs = np.array(freqs).flatten()
-            ft = np.array(ft).flatten()
-        except Exception as e:
-            raise RuntimeError(f"Failed to run MATLAB plotspec_gui: {e}") from e
+        # Compute spectrum in Python (plotspec_gui is just fft+fftshift
+        # and cannot accept complex numpy arrays via the MATLAB engine API)
+        N = len(data)
+        ft = np.fft.fftshift(np.fft.fft(data))
+        freqs = np.fft.fftshift(np.fft.fftfreq(N, d=1.0 / fs))
 
         return {
             "time": t,

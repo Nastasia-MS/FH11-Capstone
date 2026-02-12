@@ -1,10 +1,8 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                               QPushButton, QComboBox, QSpinBox, QFrame, 
-                               QSlider, QGridLayout, QTabWidget, QDoubleSpinBox, QLineEdit)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                               QPushButton, QComboBox, QFrame,
+                               QSlider, QTabWidget, QDoubleSpinBox)
 from PySide6.QtCore import Qt
 
-from widgets.constellation import ConstellationWidget
-from widgets.power_spectrum import PowerSpectrumWidget
 from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 import numpy as np
 from datetime import datetime
@@ -27,6 +25,7 @@ class WaveformSelectionTab(QWidget):
         self.Nsymb = 256
         self.span = 10 # symbols
         self.modulation = "PAM"
+        self.output_type = "passband"
 
         self.current_data = None
         self.current_fs = None
@@ -152,6 +151,17 @@ class WaveformSelectionTab(QWidget):
         self.pulse_shape_combo.setCurrentText("rrc")
         layout.addWidget(self.pulse_shape_combo)
 
+        # Output Type
+        output_type_label = QLabel("Output Type")
+        layout.addWidget(output_type_label)
+
+        self.output_type_combo = QComboBox()
+        self.output_type_combo.addItems(["Passband (Real)", "Baseband (Complex IQ)"])
+        self.output_type_combo.currentIndexChanged.connect(
+            lambda idx: setattr(self, "output_type", "passband" if idx == 0 else "baseband")
+        )
+        layout.addWidget(self.output_type_combo)
+
         #layout.addStretch()
 
         generate_btn = QPushButton("▶ Generate Dataset")
@@ -220,27 +230,37 @@ class WaveformSelectionTab(QWidget):
     def update_waveform_plots(self):
         if self.current_data is None:
             return
-        
+
         data = self.current_data
         fs = self.current_fs
 
         t = np.arange(len(data)) / fs * 1e6
-        ft = np.fft.fft(data)
-        freqs = np.fft.fftfreq(len(data), 1 / fs) * 1e-6
-
         sps = int(fs * self.Tsymb)
 
-        self.waveform_plot.plot_data(t, np.real(data))
+        # Time domain: for complex data plot I and Q; for real plot as-is
+        if np.iscomplexobj(data):
+            self.waveform_plot.plot_data(t, np.real(data), np.imag(data))
+        else:
+            self.waveform_plot.plot_data(t, np.real(data))
+
+        # Frequency domain: for complex use fftshift for centered spectrum
+        if np.iscomplexobj(data):
+            ft = np.fft.fftshift(np.fft.fft(data))
+            freqs = np.fft.fftshift(np.fft.fftfreq(len(data), 1 / fs)) * 1e-6
+        else:
+            ft = np.fft.fft(data)
+            freqs = np.fft.fftfreq(len(data), 1 / fs) * 1e-6
+
         self.freq_plot.plot_data(freqs, np.abs(ft))
+
         self.constellation_plot.plot_data(
-        data=data,
-        fs=fs,
-        fc=self.fc,
-        sps=sps,
-        M=self.M,
-        modulation=self.current_modulation,
-        nsymb=self.Nsymb,
-        eng=self.matlab.eng,
+            data=data,
+            fs=fs,
+            fc=self.fc,
+            sps=sps,
+            M=self.M,
+            modulation=self.current_modulation,
+            nsymb=self.Nsymb,
         )
         self.spectrogram_plot.plot_data(x=data, fs=fs, modulation=self.current_modulation)
 
@@ -257,8 +277,8 @@ class WaveformSelectionTab(QWidget):
         var = self.var
         pulse_shape = self.pulse_shape_combo.currentText()
 
-        # Enforce Nyquist
-        if fc >= fs / 2:
+        # Enforce Nyquist (only for passband; fc is metadata-only for baseband)
+        if self.output_type == "passband" and fc >= fs / 2:
             raise ValueError(f"Invalid parameters: fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
 
         # Validate: fs * Tsymb must be an integer (samples per symbol)
@@ -279,7 +299,8 @@ class WaveformSelectionTab(QWidget):
             var=var,
             alpha=alpha,
             span=span,
-            pulse_shape=pulse_shape
+            pulse_shape=pulse_shape,
+            output_type=self.output_type
         )
 
         self.current_data = result["signal"]
@@ -306,6 +327,7 @@ class WaveformSelectionTab(QWidget):
             'alpha': self.alpha,
             'span': self.span,
             'pulse_shape': self.pulse_shape_combo.currentText(),
+            'output_type': self.output_type,
             'source': 'generated'
         }
 

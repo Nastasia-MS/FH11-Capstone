@@ -3,9 +3,17 @@ RF Signal Augmentation Pipeline for Machine Learning
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from scipy.signal import hilbert
+import copy
+import os
+
 import numpy as np
+
+try:
+    import scipy.io as sio
+except ImportError:
+    sio = None
 
 
 class AugmentationBlock(ABC):
@@ -145,3 +153,211 @@ class ScalarAmplitudeAndPhaseShift(AugmentationBlock):
 
     def __repr__(self) -> str:
         return f"ScalarAmplitudeAndPhaseShift(amplitude={self.amplitude:.4f}, phi={self.phi:.4f})"
+
+
+# ---------------------------------------------------------------------------
+# Stochastic TDL Channel helpers (ported from CLIP_datagen/Stochastic)
+# ---------------------------------------------------------------------------
+
+def _load_waveform(path: str,
+                   fmt: str,
+                   mat_key: Optional[str],
+                   iq_layout: str = "auto") -> np.ndarray:
+    """
+    Returns a 1-D complex numpy array.
+    Supports:
+      - .npy: complex array, or real array with last dim==2 interpreted as [I,Q]
+      - .mat: specify mat_key, or auto-pick first non-private variable
+    """
+    fmt = fmt.lower()
+
+    if fmt == "npy":
+        x = np.load(path)
+    elif fmt == "mat":
+        if sio is None:
+            raise RuntimeError("scipy is required to read .mat files. Please `pip install scipy`.")
+        md = sio.loadmat(path)
+        if mat_key is None:
+            keys = [k for k in md.keys() if not k.startswith("__")]
+            if not keys:
+                raise ValueError(f"No usable variables found in MAT file: {path}")
+            mat_key = keys[0]
+        x = md[mat_key]
+    else:
+        raise ValueError(f"Unsupported waveform format '{fmt}'. Use 'npy' or 'mat'.")
+
+    x = np.asarray(x)
+    x = np.squeeze(x)
+
+    if np.iscomplexobj(x):
+        xc = x.astype(np.complex64)
+    else:
+        if (x.ndim >= 1) and (x.shape[-1] == 2) and (iq_layout in ("auto", "iq2")):
+            i = x[..., 0]
+            q = x[..., 1]
+            xc = (i + 1j * q).astype(np.complex64)
+            xc = np.squeeze(xc)
+        else:
+            xc = x.astype(np.float32).astype(np.complex64)
+
+    xc = np.reshape(xc, (-1,))
+    return xc
+
+
+def _normalize_rms(x: np.ndarray, target_rms: Optional[float]) -> np.ndarray:
+    if target_rms is None:
+        return x
+    p = np.mean(np.abs(x) ** 2)
+    if p <= 0:
+        return x
+    rms = float(np.sqrt(p))
+    if rms == 0:
+        return x
+    return x * (target_rms / rms)
+
+
+def _pad_or_trim_1d(x: np.ndarray, n: int, pad_mode: str, trim_mode: str) -> np.ndarray:
+    if len(x) == n:
+        return x
+
+    if len(x) > n:
+        if trim_mode == "first":
+            return x[:n]
+        elif trim_mode == "center":
+            start = (len(x) - n) // 2
+            return x[start:start + n]
+        elif trim_mode == "last":
+            return x[-n:]
+        else:
+            raise ValueError(f"Unknown trim_mode '{trim_mode}'")
+    else:
+        if pad_mode == "zero":
+            y = np.zeros((n,), dtype=np.complex64)
+            y[:len(x)] = x
+            return y
+        elif pad_mode == "repeat":
+            reps = (n + len(x) - 1) // len(x)
+            y = np.tile(x, reps)[:n]
+            return y.astype(np.complex64)
+        else:
+            raise ValueError(f"Unknown pad_mode '{pad_mode}'")
+
+
+def augment_from_config(cfg: Dict[str, Any]) -> np.ndarray:
+    """
+    Config-driven stochastic TDL channel augmentation.
+    Ported from CLIP_datagen/Stochastic/stochastic.py.
+    TF/Sionna are imported lazily so the rest of the app works without them.
+    """
+    try:
+        import tensorflow as tf
+        from sionna.phy import config as sn_config
+        from sionna.phy.channel.time_channel import TimeChannel
+        from sionna.phy.channel.tr38901.tdl import TDL
+    except ImportError as e:
+        raise ImportError(
+            "Stochastic TDL augmentation requires TensorFlow and Sionna. "
+            "Install them with: pip install tensorflow sionna\n"
+            f"Original error: {e}"
+        )
+
+    # ---- Seed ----
+    seed = cfg.get("seed", None)
+    if seed is not None:
+        sn_config.seed = int(seed)
+
+    # ---- Waveform (input-side only) ----
+    wcfg = cfg["waveform"]
+    if "_preloaded_data" in wcfg:
+        x = np.asarray(wcfg["_preloaded_data"]).astype(np.complex64).reshape(-1)
+    else:
+        x = _load_waveform(
+            path=wcfg["path"],
+            fmt=wcfg.get("format", "npy"),
+            mat_key=wcfg.get("mat_key", None),
+            iq_layout=wcfg.get("iq_layout", "auto"),
+        )
+    x = _normalize_rms(x, wcfg.get("normalize_rms", None))
+
+    aug = cfg["augmentation"]
+    out_n = int(aug["output_num_samples"])
+    pad_mode = aug.get("pad_mode", "repeat")
+    trim_mode = aug.get("trim_mode", "first")
+
+    # Choose input length = output length (we'll crop/pad after channel)
+    x_in = _pad_or_trim_1d(x, out_n, pad_mode=pad_mode, trim_mode=trim_mode)
+
+    # Inherent waveform sample rate
+    waveform_sr = float(wcfg["sample_rate_hz"])
+
+    # ---- Channel (stochastic sim side) ----
+    chcfg = cfg["channel"]
+    if chcfg.get("type", "").lower() != "tdl":
+        raise NotImplementedError("Only TDL is implemented. Extend for CDL/UMi/UMa/RMa later.")
+
+    carrier_frequency = float(chcfg["carrier_frequency_hz"])
+    channel_sr = float(chcfg.get("sample_rate_hz", waveform_sr))
+
+    tdl = TDL(
+        model=chcfg["profile"],
+        delay_spread=float(chcfg["delay_spread_s"]),
+        carrier_frequency=carrier_frequency,
+        min_speed=float(chcfg.get("min_speed_mps", 0.0)),
+        max_speed=chcfg.get("max_speed_mps", None),
+        num_rx_ant=int(chcfg.get("num_rx_ant", 1)),
+        num_tx_ant=int(chcfg.get("num_tx_ant", 1)),
+    )
+
+    time_ch = TimeChannel(
+        channel_model=tdl,
+        bandwidth=channel_sr,
+        num_time_samples=len(x_in),
+        maximum_delay_spread=float(chcfg.get("maximum_delay_spread_s", 3e-6)),
+        l_min=chcfg.get("l_min", None),
+        l_max=chcfg.get("l_max", None),
+        normalize_channel=bool(chcfg.get("normalize_channel", False)),
+        return_channel=False,
+    )
+
+    # ---- Noise ----
+    ncfg = cfg.get("noise", {})
+    no = None
+    if "no" in ncfg and ncfg["no"] is not None:
+        no = float(ncfg["no"])
+    elif "snr_db" in ncfg and ncfg["snr_db"] is not None:
+        snr_db = float(ncfg["snr_db"])
+        p_sig = float(np.mean(np.abs(x_in) ** 2))
+        snr_lin = 10.0 ** (snr_db / 10.0)
+        no = p_sig / snr_lin
+
+    # ---- Apply channel ----
+    # Expected shape: [batch, num_tx, num_tx_ant, num_time_samples]
+    x_tf = tf.constant(x_in.reshape(1, 1, 1, -1), dtype=tf.complex64)
+    no_tf = None if no is None else tf.constant(no, dtype=tf.float32)
+
+    y_tf = time_ch(x_tf, no=no_tf)
+    y = y_tf.numpy().reshape(-1).astype(np.complex64)
+
+    # ---- Force output length requested ----
+    y_out = _pad_or_trim_1d(y, out_n, pad_mode="zero", trim_mode="first")
+    return y_out
+
+
+class StochasticTDLAugmentation(AugmentationBlock):
+    """
+    Config-driven stochastic TDL channel augmentation block.
+    Wraps augment_from_config() using the CLIP_datagen config schema.
+    """
+
+    def __init__(self, config: dict):
+        self.config = config
+
+    def apply(self, signal: np.ndarray, fs: float, **kwargs) -> np.ndarray:
+        cfg = copy.deepcopy(self.config)
+        cfg["waveform"]["_preloaded_data"] = signal
+        return augment_from_config(cfg)
+
+    def __repr__(self) -> str:
+        profile = self.config.get("channel", {}).get("profile", "?")
+        snr = self.config.get("noise", {}).get("snr_db", "?")
+        return f"StochasticTDLAugmentation(profile={profile}, snr_db={snr})"

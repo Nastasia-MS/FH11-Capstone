@@ -22,6 +22,16 @@ class MATLABWaveformGenerator:
             "alpha", float(cfg.alpha),
             "span", float(cfg.span),
             "pulse_shape", cfg.pulse_shape,
+            "output_type", cfg.output_type,
             nargout=1,
         )
+
+        # matlab.double with is_complex=True needs explicit handling —
+        # np.asarray() can silently drop the imaginary part or throw
+        # depending on the MATLAB Engine version.
+        if getattr(data, 'is_complex', False):
+            real_part = np.array(data.real, dtype=np.float64).flatten()
+            imag_part = np.array(data.imag, dtype=np.float64).flatten()
+            return (real_part + 1j * imag_part).astype(np.complex128)
+
         return np.asarray(data).flatten()

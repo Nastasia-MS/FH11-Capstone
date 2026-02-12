@@ -18,6 +18,7 @@ class WaveformConfig:
     alpha: float = 0.35
     span: int = 8
     pulse_shape: str = "rrc"
+    output_type: str = "passband"
 
     def __post_init__(self):
         if isinstance(self.M, float) and self.M.is_integer():
@@ -39,7 +40,7 @@ class WaveformConfig:
         if abs(sps - round(sps)) > 1e-9:
             raise ValueError("fs * Tsymb must be an integer")
 
-        if self.fc >= self.fs / 2:
+        if self.output_type == "passband" and self.fc >= self.fs / 2:
             raise ValueError("fc must be < fs/2")
 
         if self.modulation == "FSK":
@@ -88,6 +89,7 @@ class Waveform:
         alpha: float = 0.35,
         span: int = 8,
         pulse_shape: str = "rrc",
+        output_type: str = "passband",
     ):
         self.config = WaveformConfig(
             modulation=modulation,
@@ -101,6 +103,7 @@ class Waveform:
             alpha=alpha,
             span=span,
             pulse_shape=pulse_shape,
+            output_type=output_type,
         )
 
         self.matlab_engine = matlab_engine

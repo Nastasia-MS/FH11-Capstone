@@ -17,12 +17,12 @@ def get_stylesheet():
             color: #6b7280;
         }
         .section-title {
-            font-size: 15px;
+            font-size: 13px;
             font-weight: 600;
             color: #111827;
         }
         .section-subtitle {
-            font-size: 12px;
+            font-size: 11px;
             color: #6b7280;
         }
         .card-title {
@@ -31,7 +31,7 @@ def get_stylesheet():
             color: #111827;
         }
         .stat-value {
-            font-size: 18px;
+            font-size: 14px;
             font-weight: 600;
             color: #111827;
         }
@@ -43,8 +43,8 @@ def get_stylesheet():
             background-color: white;
             border: 1px solid #e5e7eb;
             border-radius: 6px;
-            padding: 10px 20px;
-            font-size: 13px;
+            padding: 7px 14px;
+            font-size: 12px;
             color: #374151;
         }
         QPushButton:hover {
@@ -72,15 +72,33 @@ def get_stylesheet():
             border-bottom: 2px solid #111827;
             color: #111827;
         }
+        QPushButton#subtabPill {
+            background-color: #f5f5f5;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 4px 12px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #6b7280;
+        }
+        QPushButton#subtabPill:checked {
+            background-color: #111827;
+            color: white;
+            border: 1px solid #111827;
+        }
+        QPushButton#subtabPill:hover:!checked {
+            background-color: #e5e7eb;
+            color: #374151;
+        }
         /* Combo box / dropdown improvements for higher contrast */
         QComboBox {
             background-color: #ffffff;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 13px;
+            padding: 5px 10px;
+            font-size: 12px;
             color: #111827;
-            min-height: 20px;
+            min-height: 16px;
         }
         QComboBox:hover, QComboBox:focus {
             border-color: #111827;
@@ -130,10 +148,19 @@ def get_stylesheet():
             background-color: white;
             border: 1px solid #e5e7eb;
             border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 12px;
+            padding: 4px 8px;
+            font-size: 11px;
             color: #1f2937;
-            min-height: 15px;
+            min-height: 12px;
+        }
+        QSpinBox {
+            background-color: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 11px;
+            color: #1f2937;
+            min-height: 12px;
         }
         QSpinBox::up-arrow {
             image: none;
@@ -149,17 +176,17 @@ def get_stylesheet():
         }
         QSlider::groove:horizontal {
             border: none;
-            height: 6px;
+            height: 4px;
             background: #e5e7eb;
-            border-radius: 3px;
+            border-radius: 2px;
         }
         QSlider::handle:horizontal {
             background: #111827;
             border: none;
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
             margin: -5px 0;
-            border-radius: 8px;
+            border-radius: 7px;
         }
         QFrame#card {
             background-color: white;

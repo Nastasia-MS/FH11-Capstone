@@ -3,3 +3,7 @@ numpy
 PySide6
 matplotlib
 scikit-learn
+scipy
+tensorflow
+sionna
+sionna-rt

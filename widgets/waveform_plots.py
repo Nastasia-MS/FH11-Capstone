@@ -1,10 +1,11 @@
-from PySide6.QtWidgets import QGridLayout, QWidget, QLabel, QComboBox, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QLabel, QComboBox, QPushButton, QVBoxLayout, QHBoxLayout
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.ticker import FuncFormatter
 import numpy as np
 from scipy import signal
+
+from widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
 
 class PlottingWidget(QWidget):
     def __init__(self):
@@ -33,19 +34,23 @@ class PlottingWidget(QWidget):
         # Initial plot
         self.plot_data()
     
-    def plot_data(self, t=None, signal=None):
-        """Generate and display a sample plot"""
+    def plot_data(self, t=None, signal=None, signal_q=None):
+        """Generate and display a sample plot. If signal_q is provided, plots I and Q traces."""
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-     
-        if (t is not None and signal is not None):
-            ax.plot(t, signal, label='Waveform')
+
+        if t is not None and signal is not None:
+            if signal_q is not None:
+                ax.plot(t, signal, label='I (In-phase)', alpha=0.8)
+                ax.plot(t, signal_q, label='Q (Quadrature)', alpha=0.8)
+            else:
+                ax.plot(t, signal, label='Waveform')
             ax.set_xlabel('Time (μs)')
             ax.set_ylabel('Amplitude')
             ax.set_title('Waveform Plot')
             ax.legend()
             ax.grid(True)
-        
+
         self.canvas.draw()
 
 
@@ -74,18 +79,10 @@ class IQDomainPlot(PlottingWidget):
         super().__init__()
         self.refresh_button.hide()
         
-    def plot_data(self, data=None, fs=None, fc=None, sps=None, M=None, 
+    def plot_data(self, data=None, fs=None, fc=None, sps=None, M=None,
                   modulation=None, alpha=0.35, span=8, pulse_shape='rrc',
-                  nsymb=None, eng=None):
-        """
-        Plot IQ constellation using matched filter approach from MATLAB notebook:
-        
-        1. Downconvert passband to complex baseband
-        2. Apply matched RRC filter: rxFiltered = upfirdn(txWaveform, h, 1)
-        3. Account for total delay: span * sps  
-        4. Downsample: rxSampled = rxFiltered(totalDelay + 1 : sps : end)
-        5. Truncate: rxRecovered = rxSampled(1:numSymbols)
-        """
+                  nsymb=None):
+        """Plot IQ constellation using matched filter demodulation."""
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         
@@ -102,76 +99,24 @@ class IQDomainPlot(PlottingWidget):
         elif modulation == "FHSS":
             self._plot_fhss_trajectory(ax, data, fs, fc, sps, M)
         else:
-            self._plot_constellation(ax, data, fs, fc, sps, M, modulation, 
-                                     alpha, span, pulse_shape, nsymb, eng)
+            self._plot_constellation(ax, data, fs, fc, sps, M, modulation,
+                                     alpha, span, pulse_shape, nsymb)
         
         self.canvas.draw()
     
     def _plot_constellation(self, ax, data, fs, fc, sps, M, modulation,
-                            alpha, span, pulse_shape, nsymb, eng):
-        """
-        Plot constellation using matched filter demodulation.
-        Follows exact approach from MATLAB notebook.
-        """
-        sps = int(sps)
+                            alpha, span, pulse_shape, nsymb):
+        """Plot constellation using matched filter demodulation."""
         M = int(M)
-        
-        # Step 1: Downconvert from passband to complex baseband
-        t = np.arange(len(data)) / fs
-        complex_baseband = data * np.exp(-1j * 2 * np.pi * fc * t)
-        
-        # Step 2: Apply matched filter (RRC) which also acts as low-pass
-        if pulse_shape == 'rrc' and eng is not None:
-            # Use MATLAB to design the same RRC filter
-            h = eng.rcosdesign(float(alpha), float(span), float(sps), 'sqrt', nargout=1)
-            h = np.array(h).flatten()
-            
-            # Apply matched filter (this handles both filtering and ISI reduction)
-            rxFiltered = np.convolve(complex_baseband, h, mode='full')
-            
-            # Scale factor of 2 to recover amplitude (from mixing cos²)
-            rxFiltered = 2 * rxFiltered
-            
-            # totalDelay = span * sps (from TX filter + RX matched filter)
-            totalDelay = span * sps
-            
-            # Downsample at optimal sampling instants
-            rxSampled = rxFiltered[totalDelay::sps]
-            
-            # Truncate to number of symbols, excluding edge transients
-            if nsymb is not None:
-                # Skip first 'span' symbols (TX filter transient) 
-                # and last 'span' symbols (RX filter transient)
-                skip_symbols = int(span)
-                start_idx = int(skip_symbols)
-                end_idx = int(min(nsymb - skip_symbols, len(rxSampled) - skip_symbols))
-                
-                if end_idx > start_idx:
-                    rxRecovered = rxSampled[start_idx:end_idx]
-                else:
-                    rxRecovered = rxSampled[:int(nsymb)]
-            else:
-                rxRecovered = rxSampled
-            
-        else:
-            # Rectangular pulse - low-pass filter then downsample
-            symbol_rate = fs / sps
-            cutoff = symbol_rate / 2 * 0.8  # Tight cutoff for rect
-            sos = signal.butter(6, cutoff, 'low', fs=fs, output='sos')
-            complex_baseband = 2 * signal.sosfilt(sos, complex_baseband)
-            
-            offset = sps // 2
-            rxRecovered = complex_baseband[offset::sps]
-        
-        # Normalize to unit average power (matches MATLAB's UnitAveragePower)
-        avg_power = np.mean(np.abs(rxRecovered)**2)
-        if avg_power > 0:
-            rxRecovered = rxRecovered / np.sqrt(avg_power)
-        
+
+        rxRecovered = demodulate_to_symbols(
+            data, fs, fc, int(sps), alpha=alpha, span=int(span),
+            pulse_shape=pulse_shape, nsymb=nsymb,
+        )
+
         I_symbols = np.real(rxRecovered)
         Q_symbols = np.imag(rxRecovered)
-        
-        # Plot constellation
+
         ax.scatter(I_symbols, Q_symbols, alpha=0.6, s=20, label='Received Symbols')
         ax.set_xlabel('In-phase (I)')
         ax.set_ylabel('Quadrature (Q)')
@@ -181,7 +126,6 @@ class IQDomainPlot(PlottingWidget):
         ax.axhline(y=0, color='k', linewidth=0.5, alpha=0.3)
         ax.axvline(x=0, color='k', linewidth=0.5, alpha=0.3)
         
-        # Add ideal constellation points
         if modulation == "QAM":
             self._add_ideal_qam_points(ax, M)
         elif modulation == "PSK":
@@ -195,20 +139,7 @@ class IQDomainPlot(PlottingWidget):
     
     def _plot_fsk_trajectory(self, ax, data, fs, fc, sps, M):
         """Plot FSK frequency trajectory in IQ space"""
-        t_demod = np.arange(len(data)) / fs
-        
-        complex_baseband = data * np.exp(-1j * 2 * np.pi * fc * t_demod)
-        
-        Tsymb = sps / fs
-        freq_sep = 1 / Tsymb
-        cutoff = min(M * freq_sep, fc * 0.8, fs / 2 * 0.9)
-        sos = signal.butter(4, cutoff, 'low', fs=fs, output='sos')
-        complex_baseband = signal.sosfilt(sos, complex_baseband)
-        complex_baseband = 2 * complex_baseband
-        
-        downsample_factor = max(1, int(sps / 10))
-        I_viz = np.real(complex_baseband[::downsample_factor])
-        Q_viz = np.imag(complex_baseband[::downsample_factor])
+        I_viz, Q_viz = extract_fsk_iq(data, fs, fc, sps, M)
         
         time_colors = np.arange(len(I_viz))
         
@@ -227,22 +158,7 @@ class IQDomainPlot(PlottingWidget):
     
     def _plot_fhss_trajectory(self, ax, data, fs, fc, sps, M):
         """Plot FHSS frequency hopping trajectory in IQ space"""
-        t_demod = np.arange(len(data)) / fs
-        
-        complex_baseband = data * np.exp(-1j * 2 * np.pi * fc * t_demod)
-        
-        # FHSS has wider bandwidth due to hopping
-        channel_spacing = fs / (2 * M)
-        hop_bw = channel_spacing * (M - 1)
-        cutoff = min(hop_bw * 1.5, fs / 2 * 0.9)
-        sos = signal.butter(4, cutoff, 'low', fs=fs, output='sos')
-        complex_baseband = signal.sosfilt(sos, complex_baseband)
-        complex_baseband = 2 * complex_baseband
-        
-        # Downsample for visualization
-        downsample_factor = max(1, int(sps / 10))
-        I_viz = np.real(complex_baseband[::downsample_factor])
-        Q_viz = np.imag(complex_baseband[::downsample_factor])
+        I_viz, Q_viz = extract_fhss_iq(data, fs, fc, sps, M)
         
         time_colors = np.arange(len(I_viz))
         
@@ -381,48 +297,59 @@ class SpectrogramPlot(PlottingWidget):
         
         x = self.current_x
         fs = self.current_fs
-        
-        if np.iscomplexobj(x):
-            x = np.real(x)
-        
+        is_complex = np.iscomplexobj(x)
+
         preset = self._get_preset()
-        
+
         nperseg = preset["nperseg"]
 
         if len(x) < nperseg:
             nperseg = len(x)
-    
+
         noverlap = int(nperseg * preset["overlap"])
 
         if noverlap >= nperseg:
             noverlap = nperseg - 1
-        
-        f, t, Sxx = signal.spectrogram(
-            x, fs=fs, window=preset["window"],
-            nperseg=nperseg, noverlap=noverlap,
-            scaling='density', mode='psd'
-        )
-        
+
+        if is_complex:
+            f, t, Sxx = signal.spectrogram(
+                x, fs=fs, window=preset["window"],
+                nperseg=nperseg, noverlap=noverlap,
+                scaling='density', mode='psd',
+                return_onesided=False
+            )
+            f = np.fft.fftshift(f)
+            Sxx = np.fft.fftshift(Sxx, axes=0)
+        else:
+            f, t, Sxx = signal.spectrogram(
+                x, fs=fs, window=preset["window"],
+                nperseg=nperseg, noverlap=noverlap,
+                scaling='density', mode='psd'
+            )
+
         Sxx_dB = 10 * np.log10(Sxx + 1e-10)
-        
+
         vmin = np.percentile(Sxx_dB, preset["vmin_pct"])
         vmax = np.percentile(Sxx_dB, preset["vmax_pct"])
-        
+
         im = ax.pcolormesh(t, f, Sxx_dB, shading='gouraud',
                           cmap=self.cmap_combo.currentText(),
                           vmin=vmin, vmax=vmax)
-        
+
         self.figure.colorbar(im, ax=ax, label='Power/Frequency (dB/Hz)')
-        
+
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Frequency [Hz]")
-        
+
         if self.current_modulation:
             ax.set_title(f"{self.current_modulation} Spectrogram")
         else:
             ax.set_title("Spectrogram")
-        
-        ax.set_ylim(0, fs/2)
+
+        if is_complex:
+            ax.set_ylim(-fs/2, fs/2)
+        else:
+            ax.set_ylim(0, fs/2)
         ax.grid(True, alpha=0.3, linestyle='--')
         
         self.figure.tight_layout()
