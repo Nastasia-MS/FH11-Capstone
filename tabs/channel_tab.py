@@ -10,8 +10,8 @@ from widgets.toggle_switch import ToggleSwitch
 from widgets.noise_spectrum import NoiseSpectrumWidget
 from widgets.waveform_plots import PlottingWidget
 from backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
-                                  ScalarAmplitudeAndPhaseShift, StochasticTDLAugmentation,
-                                  SionnaRTAugmentation)
+                                  ScalarAmplitudeAndPhaseShift, FrequencyShift,
+                                  StochasticTDLAugmentation, SionnaRTAugmentation)
 import numpy as np
 import json
 import os
@@ -28,8 +28,10 @@ class ChannelNoiseTab(QWidget):
         self.snr_db = 20.0
         self.amplitude = 1.0
         self.phase_deg = 0.0
+        self.freq_shift_hz = 0.0
         self.awgn_enabled = True
         self.amp_phase_enabled = False
+        self.freq_shift_enabled = False
 
         # Stochastic TDL params
         self.active_subtab = 0  # 0=AWGN, 1=Stochastic, 2=RT
@@ -281,6 +283,38 @@ class ChannelNoiseTab(QWidget):
         self.phase_spin.setValue(self.phase_deg)
         self.phase_spin.valueChanged.connect(lambda v: setattr(self, 'phase_deg', v))
         layout.addWidget(self.phase_spin)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep2)
+
+        # Frequency Shift (CFO)
+        freq_shift_header = QHBoxLayout()
+        freq_shift_left = QVBoxLayout()
+        freq_shift_title = QLabel("Frequency Offset (CFO)")
+        freq_shift_title.setProperty("class", "section-title")
+        freq_shift_desc = QLabel("Simulate carrier frequency offset from oscillator mismatch")
+        freq_shift_desc.setProperty("class", "section-subtitle")
+        freq_shift_left.addWidget(freq_shift_title)
+        freq_shift_left.addWidget(freq_shift_desc)
+        freq_shift_header.addLayout(freq_shift_left)
+        freq_shift_header.addStretch()
+        self.freq_shift_toggle = ToggleSwitch()
+        self.freq_shift_toggle.setChecked(self.freq_shift_enabled)
+        self.freq_shift_toggle.toggled.connect(lambda checked: setattr(self, 'freq_shift_enabled', checked))
+        freq_shift_header.addWidget(self.freq_shift_toggle)
+        layout.addLayout(freq_shift_header)
+
+        freq_shift_label = QLabel("Frequency Offset (MHz)")
+        layout.addWidget(freq_shift_label)
+        self.freq_shift_spin = QDoubleSpinBox()
+        self.freq_shift_spin.setRange(-100.0, 100.0)
+        self.freq_shift_spin.setSingleStep(0.01)
+        self.freq_shift_spin.setDecimals(4)
+        self.freq_shift_spin.setValue(self.freq_shift_hz / 1e6)
+        self.freq_shift_spin.valueChanged.connect(lambda v: setattr(self, 'freq_shift_hz', v * 1e6))
+        layout.addWidget(self.freq_shift_spin)
 
         return page
 
@@ -602,30 +636,23 @@ class ChannelNoiseTab(QWidget):
         solver_title.setProperty("class", "section-title")
         layout.addWidget(solver_title)
 
-        self.rt_cb_los = QCheckBox("Line of Sight")
-        self.rt_cb_los.setChecked(True)
-        self.rt_cb_los.toggled.connect(lambda _: self._rt_push_solver())
-        layout.addWidget(self.rt_cb_los)
-
-        self.rt_cb_specular = QCheckBox("Specular Reflection")
-        self.rt_cb_specular.setChecked(True)
-        self.rt_cb_specular.toggled.connect(lambda _: self._rt_push_solver())
-        layout.addWidget(self.rt_cb_specular)
-
-        self.rt_cb_diffuse = QCheckBox("Diffuse Reflection")
-        self.rt_cb_diffuse.setChecked(True)
-        self.rt_cb_diffuse.toggled.connect(lambda _: self._rt_push_solver())
-        layout.addWidget(self.rt_cb_diffuse)
-
-        self.rt_cb_refraction = QCheckBox("Refraction")
-        self.rt_cb_refraction.setChecked(True)
-        self.rt_cb_refraction.toggled.connect(lambda _: self._rt_push_solver())
-        layout.addWidget(self.rt_cb_refraction)
-
-        self.rt_cb_synthetic = QCheckBox("Synthetic Array")
-        self.rt_cb_synthetic.setChecked(True)
-        self.rt_cb_synthetic.toggled.connect(lambda _: self._rt_push_solver())
-        layout.addWidget(self.rt_cb_synthetic)
+        solver_toggles = [
+            ("Line of Sight",       "rt_cb_los"),
+            ("Specular Reflection", "rt_cb_specular"),
+            ("Diffuse Reflection",  "rt_cb_diffuse"),
+            ("Refraction",          "rt_cb_refraction"),
+            ("Synthetic Array",     "rt_cb_synthetic"),
+        ]
+        for label_text, attr_name in solver_toggles:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label_text))
+            row.addStretch()
+            toggle = ToggleSwitch()
+            toggle.setChecked(True)
+            toggle.toggled.connect(lambda _: self._rt_push_solver())
+            setattr(self, attr_name, toggle)
+            row.addWidget(toggle)
+            layout.addLayout(row)
 
         # --- Separator ---
         sep5 = QFrame()
@@ -1297,6 +1324,8 @@ class ChannelNoiseTab(QWidget):
             if self.amp_phase_enabled:
                 phase_rad = np.deg2rad(self.phase_deg)
                 pipeline.add(ScalarAmplitudeAndPhaseShift(amplitude=self.amplitude, phi=phase_rad))
+            if self.freq_shift_enabled:
+                pipeline.add(FrequencyShift(delta_f=self.freq_shift_hz))
             augmented_signal = pipeline.apply(signal, fs)
 
         # Get metadata for constellation plot

@@ -153,6 +153,39 @@ class ScalarAmplitudeAndPhaseShift(AugmentationBlock):
         return f"ScalarAmplitudeAndPhaseShift(amplitude={self.amplitude:.4f}, phi={self.phi:.4f})"
 
 
+class FrequencyShift(AugmentationBlock):
+    """Apply a carrier frequency offset (CFO) to the signal.
+
+    Models oscillator mismatch between TX and RX by multiplying by
+    ``e^{j 2π Δf t}``, producing a linearly increasing phase that
+    causes the constellation to spin over time.
+
+    Parameters
+    ----------
+    delta_f : float
+        Frequency offset in Hz.
+    """
+
+    def __init__(self, delta_f: float = 0.0):
+        self.delta_f = delta_f
+
+    def apply(self, signal: np.ndarray, fs: float, **_kwargs) -> np.ndarray:
+        if self.delta_f == 0.0:
+            return signal
+
+        t = np.arange(len(signal)) / fs
+        shift = np.exp(1j * 2 * np.pi * self.delta_f * t)
+
+        if np.iscomplexobj(signal):
+            return (signal * shift).astype(signal.dtype)
+        else:
+            # Real passband: frequency shift is a mixer (cosine multiplication)
+            return (signal * np.cos(2 * np.pi * self.delta_f * t)).astype(signal.dtype)
+
+    def __repr__(self) -> str:
+        return f"FrequencyShift(delta_f={self.delta_f:.1f} Hz)"
+
+
 # ---------------------------------------------------------------------------
 # Stochastic TDL Channel helpers (ported from CLIP_datagen/Stochastic)
 # ---------------------------------------------------------------------------
