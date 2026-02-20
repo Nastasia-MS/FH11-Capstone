@@ -129,14 +129,15 @@ def extract_fsk_iq(data, fs, fc, sps, M):
     freq_sep = 1.0 / Tsymb
 
     if np.iscomplexobj(data):
-        cutoff = min(M * freq_sep, fs / 2 * 0.9)
-        sos = signal.butter(4, cutoff, 'low', fs=fs, output='sos')
-        complex_baseband = signal.sosfilt(sos, data)
+        # Baseband FSK: tones span ±(M-1)/2 * freq_sep around DC.
+        # Use a bandpass-like approach: no filtering needed for IQ trajectory
+        # since the signal is already baseband.  Just downsample for display.
+        complex_baseband = data
     else:
         t = np.arange(len(data)) / fs
         complex_baseband = data * np.exp(-1j * 2 * np.pi * fc * t)
 
-        cutoff = min(M * freq_sep, fc * 0.8, fs / 2 * 0.9)
+        cutoff = min(M * freq_sep, fs / 2 * 0.9)
         sos = signal.butter(4, cutoff, 'low', fs=fs, output='sos')
         complex_baseband = 2.0 * signal.sosfilt(sos, complex_baseband)
 
@@ -160,9 +161,9 @@ def extract_fhss_iq(data, fs, fc, sps, M):
     hop_bw = channel_spacing * (M - 1)
 
     if np.iscomplexobj(data):
-        cutoff = min(hop_bw * 1.5, fs / 2 * 0.9)
-        sos = signal.butter(4, cutoff, 'low', fs=fs, output='sos')
-        complex_baseband = signal.sosfilt(sos, data)
+        # Baseband FHSS: hops span the baseband directly.
+        # No filtering needed — just downsample for display.
+        complex_baseband = data
     else:
         t = np.arange(len(data)) / fs
         complex_baseband = data * np.exp(-1j * 2 * np.pi * fc * t)

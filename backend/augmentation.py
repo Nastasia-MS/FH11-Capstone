@@ -137,19 +137,17 @@ class ScalarAmplitudeAndPhaseShift(AugmentationBlock):
         self.phi = phi
 
     def apply(self, signal: np.ndarray, _fs: float, **_kwargs) -> np.ndarray:
-        phi = self.phi
-
         # build the complex channel scalar  h = |a| * e^(jφ)
-        h = self.amplitude * np.exp(1j * phi)
+        h = self.amplitude * np.exp(1j * self.phi)
 
-        # take hilbert transform to get x_a = x + jH{x}
-        x = hilbert(signal)
-        y_a = h * x
-
-        # recover real signal
-        y = np.real(y_a)
-
-        return y
+        if np.iscomplexobj(signal):
+            # Complex baseband: multiply directly
+            return (h * signal).astype(signal.dtype)
+        else:
+            # Real passband: use analytic signal via Hilbert transform
+            x_a = hilbert(signal)
+            y_a = h * x_a
+            return np.real(y_a)
 
     def __repr__(self) -> str:
         return f"ScalarAmplitudeAndPhaseShift(amplitude={self.amplitude:.4f}, phi={self.phi:.4f})"
@@ -341,6 +339,72 @@ def augment_from_config(cfg: Dict[str, Any]) -> np.ndarray:
     # ---- Force output length requested ----
     y_out = _pad_or_trim_1d(y, out_n, pad_mode="zero", trim_mode="first")
     return y_out
+
+
+class SionnaRTAugmentation(AugmentationBlock):
+    """Deterministic RT channel augmentation using Sionna's ApplyTimeChannel.
+
+    Consumes precomputed taps from the sionna_widget engine and a config dict
+    matching the multiantenna_config.json schema.
+    """
+
+    def __init__(self, config: dict, taps: np.ndarray):
+        self.config = config
+        self.taps = taps
+
+    def apply(self, signal: np.ndarray, fs: float, **kwargs) -> np.ndarray:
+        import tensorflow as tf
+        from sionna.phy.channel import ApplyTimeChannel
+
+        x = np.asarray(signal, dtype=np.complex64).reshape(-1)
+
+        # Normalize to unit power
+        p = np.mean(np.abs(x) ** 2)
+        if p > 0:
+            x = x / np.sqrt(p)
+
+        # Scale by TX power (dBm -> watts -> amplitude)
+        tx_power_dbm = float(self.config["transmitters"][0]["power_dbm"])
+        p_lin = 10.0 ** ((tx_power_dbm - 30.0) / 10.0)
+        x = x * np.sqrt(p_lin)
+
+        # Pad or trim to waveform_length
+        T = int(self.config.get("waveform_length", 1024))
+        if len(x) < T:
+            if "Zero Padded" in str(self.config.get("zero_padding", "Zero Padded")):
+                x = np.pad(x, (0, T - len(x)), mode="constant", constant_values=0)
+            else:
+                tiled = np.tile(x, (T + len(x) - 1) // len(x))
+                x = tiled[:T].astype(np.complex64)
+        else:
+            x = x[:T]
+
+        # Replicate across TX antennas: (1, 1, num_tx_ant, T)
+        tx_arr = self.config.get("tx_antenna_array", {})
+        num_tx_ant = tx_arr.get("num_rows", 1) * tx_arr.get("num_cols", 1)
+        input_wave = np.stack([x] * num_tx_ant, axis=0)
+        input_wave = input_wave[np.newaxis, np.newaxis, :, :]
+
+        L_TOT = self.taps.shape[-1]
+
+        # Noise: dBm -> watts
+        noise_power_dbm = float(self.config.get("noise_power_dBm", -108))
+        noise_linear = 10.0 ** (noise_power_dbm / 10.0) * 1e-3
+
+        apply_ch = ApplyTimeChannel(num_time_samples=T, l_tot=L_TOT)
+        output = apply_ch(
+            tf.constant(input_wave, dtype=tf.complex64),
+            tf.constant(self.taps, dtype=tf.complex64),
+            tf.constant(noise_linear, dtype=tf.float32),
+        )
+        # output shape: (1, 1, num_rx_ant, T)
+        out_np = output.numpy()
+        rx_idx = int(self.config.get("rx_antenna_index", 0))
+        return out_np[0, 0, rx_idx, :].astype(np.complex64)
+
+    def __repr__(self) -> str:
+        scene = self.config.get("filename", "?")
+        return f"SionnaRTAugmentation(scene={scene}, taps_shape={self.taps.shape})"
 
 
 class StochasticTDLAugmentation(AugmentationBlock):

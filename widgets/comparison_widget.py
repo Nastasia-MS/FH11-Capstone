@@ -98,9 +98,10 @@ class ComparisonWidget(QWidget):
     # ------------------------------------------------------------------
     def _plot_time_domain(self, ax, clean, augmented, fs):
         n_samples = min(200, len(clean))
-        t = np.arange(n_samples) / fs * 1000  # ms
+        t = np.arange(n_samples) / fs * 1e6  # µs
 
-        if np.iscomplexobj(augmented):
+        any_complex = np.iscomplexobj(clean) or np.iscomplexobj(augmented)
+        if any_complex:
             ax.plot(t, np.real(clean[:n_samples]), 'b-', linewidth=1.5, label='Clean I', alpha=0.8)
             ax.plot(t, np.imag(clean[:n_samples]), 'b--', linewidth=1.0, label='Clean Q', alpha=0.6)
             ax.plot(t, np.real(augmented[:n_samples]), 'r-', linewidth=0.8, label='Aug I', alpha=0.6)
@@ -110,28 +111,28 @@ class ComparisonWidget(QWidget):
             ax.plot(t, augmented[:n_samples], 'r-', linewidth=0.8, label='Augmented', alpha=0.6)
 
         ax.set_title('Time Domain: Clean vs Augmented')
-        ax.set_xlabel('Time (ms)')
+        ax.set_xlabel('Time (µs)')
         ax.set_ylabel('Amplitude')
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
     def _plot_psd(self, ax, clean, augmented, fs, any_complex):
+        nperseg_psd = min(1024, len(clean))
         if any_complex:
-            _, psd_clean = signal.welch(clean, fs, nperseg=1024, return_onesided=False)
-            _, psd_aug = signal.welch(augmented, fs, nperseg=1024, return_onesided=False)
+            f_psd, psd_clean = signal.welch(clean, fs, nperseg=nperseg_psd, return_onesided=False)
+            _, psd_aug = signal.welch(augmented, fs, nperseg=nperseg_psd, return_onesided=False)
+            f_psd = np.fft.fftshift(f_psd)
             psd_clean = np.fft.fftshift(psd_clean)
             psd_aug = np.fft.fftshift(psd_aug)
-            f_psd = np.fft.fftshift(np.fft.fftfreq(len(psd_clean), d=1.0 / fs))
-            ax.semilogy(f_psd / 1000, psd_clean, 'b-', linewidth=2, label='Clean')
-            ax.semilogy(f_psd / 1000, psd_aug, 'r-', linewidth=1, alpha=0.7, label='Augmented')
         else:
-            f_clean, psd_clean = signal.welch(clean, fs, nperseg=1024)
-            f_aug, psd_aug = signal.welch(augmented, fs, nperseg=1024)
-            ax.semilogy(f_clean / 1000, psd_clean, 'b-', linewidth=2, label='Clean')
-            ax.semilogy(f_aug / 1000, psd_aug, 'r-', linewidth=1, alpha=0.7, label='Augmented')
+            f_psd, psd_clean = signal.welch(clean, fs, nperseg=nperseg_psd)
+            _, psd_aug = signal.welch(augmented, fs, nperseg=nperseg_psd)
+
+        ax.semilogy(f_psd / 1e6, psd_clean, 'b-', linewidth=2, label='Clean')
+        ax.semilogy(f_psd / 1e6, psd_aug, 'r-', linewidth=1, alpha=0.7, label='Augmented')
 
         ax.set_title('Power Spectrum: Clean vs Augmented')
-        ax.set_xlabel('Frequency (kHz)')
+        ax.set_xlabel('Frequency (MHz)')
         ax.set_ylabel('Power Spectral Density')
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -140,8 +141,11 @@ class ComparisonWidget(QWidget):
         preset = _SPECTROGRAM_PRESETS.get(modulation, _DEFAULT_PRESET)
         nperseg = preset["nperseg"]
 
-        if len(x) < nperseg:
-            nperseg = len(x)
+        # Cap nperseg so the spectrogram has at least a few time segments.
+        # pcolormesh needs ≥2 columns to render; targeting ≥4 for a useful plot.
+        max_nperseg = max(16, len(x) // 4)
+        if nperseg > max_nperseg:
+            nperseg = max_nperseg
         noverlap = int(nperseg * preset["overlap"])
         if noverlap >= nperseg:
             noverlap = nperseg - 1
@@ -167,13 +171,13 @@ class ComparisonWidget(QWidget):
         vmax = np.percentile(Sxx_dB, preset["vmax_pct"])
 
         im = ax.pcolormesh(
-            t_s * 1000, f / 1000, Sxx_dB,
+            t_s * 1e6, f / 1e6, Sxx_dB,
             shading='gouraud', cmap='viridis',
             vmin=vmin, vmax=vmax,
         )
         ax.set_title(title)
-        ax.set_xlabel('Time (ms)')
-        ax.set_ylabel('Frequency (kHz)')
+        ax.set_xlabel('Time (µs)')
+        ax.set_ylabel('Frequency (MHz)')
         self.figure.colorbar(im, ax=ax, label='dB/Hz')
 
     def _plot_constellation(self, ax, clean, augmented, fs,

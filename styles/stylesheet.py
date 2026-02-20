@@ -202,6 +202,7 @@ def get_stylesheet():
         QCheckBox {
             spacing: 8px;
             font-size: 13px;
+            color: #1f2937;
         }
         QCheckBox::indicator {
             width: 40px;

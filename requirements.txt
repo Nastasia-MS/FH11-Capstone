@@ -7,3 +7,6 @@ scipy
 tensorflow
 sionna
 sionna-rt
+PyOpenGL
+matplotlib
+
