@@ -1,6 +1,7 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                               QPushButton, QComboBox, QGridLayout, QFrame, QProgressBar, QFileDialog, QListWidget, QListWidgetItem)
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                               QPushButton, QComboBox, QGridLayout, QFrame, QProgressBar, QFileDialog,
+                               QListWidget, QListWidgetItem, QGroupBox, QDoubleSpinBox, QScrollArea)
+from PySide6.QtCore import Qt, Signal
 
 import os
 import numpy as np
@@ -11,7 +12,9 @@ from widgets.training_chart import TrainingChartWidget
 
 class MLTrainingTab(QWidget):
     """ML Training configuration and visualization tab"""
-    
+    # Emitted when a model finishes training: (model_path, class_labels_list)
+    trained_model_ready = Signal(str, list)
+
     def __init__(self):
         super().__init__()
         self.setup_ui()
@@ -31,12 +34,10 @@ class MLTrainingTab(QWidget):
         layout.addWidget(right_panel, 2)
     
     def create_configuration_panel(self):
-        """Create the training configuration panel"""
-        panel = QFrame()
-        panel.setObjectName("card")
-        layout = QVBoxLayout(panel)
+        """Create the training configuration panel (scrollable)"""
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
         layout.setContentsMargins(24, 24, 24, 24)
-        #layout.setSpacing(20)
         
         # Title
         title = QLabel("⚙️ Training Configuration")
@@ -50,6 +51,11 @@ class MLTrainingTab(QWidget):
         self.add_data_btn = QPushButton("Add Data Folder")
         self.add_data_btn.clicked.connect(self.add_data_folder)
         data_btn_layout.addWidget(self.add_data_btn)
+
+        self.quick_load_btn = QPushButton("📦 Quick Load Dataset")
+        self.quick_load_btn.setToolTip("Auto-load class folders from waveform_data/ directory")
+        self.quick_load_btn.clicked.connect(self.quick_load_dataset)
+        data_btn_layout.addWidget(self.quick_load_btn)
 
         self.remove_data_btn = QPushButton("Remove Selected")
         self.remove_data_btn.clicked.connect(self.remove_selected_dataset)
@@ -72,8 +78,7 @@ class MLTrainingTab(QWidget):
         arch_label = QLabel("Model Architecture")
         layout.addWidget(arch_label)
         self.model_combo = QComboBox()
-        # Provide a few TF-ready model options with default params
-        self.model_combo.addItems(["SimpleCNN", "TinyConv", "MLP"])
+        self.model_combo.addItems(["SimpleCNN", "TinyConv", "MLP", "ResNet1DOptimized"])
         layout.addWidget(self.model_combo)
 
         # Epochs and batch size controls
@@ -92,7 +97,7 @@ class MLTrainingTab(QWidget):
         self.batch_spin = QSpinBox()
         self.batch_spin.setMinimum(1)
         self.batch_spin.setMaximum(1024)
-        self.batch_spin.setValue(32)
+        self.batch_spin.setValue(64)
         epoch_layout.addWidget(self.batch_spin)
 
         layout.addLayout(epoch_layout)
@@ -103,38 +108,131 @@ class MLTrainingTab(QWidget):
         # trainer reference
         self._trainer = None
 
-        
+        # --- Training Hyperparameters (collapsible) ---
+        self.training_hparams_group = QGroupBox("Training Hyperparameters")
+        self.training_hparams_group.setCheckable(True)
+        self.training_hparams_group.setChecked(False)
+        th_layout = QGridLayout(self.training_hparams_group)
+        th_layout.setSpacing(6)
+
         # Learning Rate
-        lr_header = QHBoxLayout()
-        lr_label = QLabel("Learning Rate")
-        self.lr_value = QLabel("0.0010")
-        self.lr_value.setProperty("class", "stat-value")
-        lr_header.addWidget(lr_label)
-        #lr_header.addStretch()
-        lr_header.addWidget(self.lr_value)
-        layout.addLayout(lr_header)
-        
+        th_layout.addWidget(QLabel("Learning Rate"), 0, 0)
+        self.lr_spin = QDoubleSpinBox()
+        self.lr_spin.setRange(1e-6, 1.0)
+        self.lr_spin.setDecimals(6)
+        self.lr_spin.setSingleStep(0.0001)
+        self.lr_spin.setValue(0.001)
+        th_layout.addWidget(self.lr_spin, 0, 1)
+
+        # Weight Decay
+        th_layout.addWidget(QLabel("Weight Decay"), 1, 0)
+        self.weight_decay_spin = QDoubleSpinBox()
+        self.weight_decay_spin.setRange(0.0, 1.0)
+        self.weight_decay_spin.setDecimals(6)
+        self.weight_decay_spin.setSingleStep(0.0001)
+        self.weight_decay_spin.setValue(1e-4)
+        th_layout.addWidget(self.weight_decay_spin, 1, 1)
+
+        # Label Smoothing
+        th_layout.addWidget(QLabel("Label Smoothing"), 2, 0)
+        self.label_smoothing_spin = QDoubleSpinBox()
+        self.label_smoothing_spin.setRange(0.0, 1.0)
+        self.label_smoothing_spin.setDecimals(2)
+        self.label_smoothing_spin.setSingleStep(0.05)
+        self.label_smoothing_spin.setValue(0.1)
+        th_layout.addWidget(self.label_smoothing_spin, 2, 1)
+
+        # Validation Split
+        th_layout.addWidget(QLabel("Validation Split"), 3, 0)
+        self.val_split_spin = QDoubleSpinBox()
+        self.val_split_spin.setRange(0.05, 0.5)
+        self.val_split_spin.setDecimals(2)
+        self.val_split_spin.setSingleStep(0.05)
+        self.val_split_spin.setValue(0.2)
+        th_layout.addWidget(self.val_split_spin, 3, 1)
+
+        # Gradient Clip
+        th_layout.addWidget(QLabel("Gradient Clip"), 4, 0)
+        self.grad_clip_spin = QDoubleSpinBox()
+        self.grad_clip_spin.setRange(0.0, 100.0)
+        self.grad_clip_spin.setDecimals(2)
+        self.grad_clip_spin.setSingleStep(0.1)
+        self.grad_clip_spin.setValue(1.0)
+        th_layout.addWidget(self.grad_clip_spin, 4, 1)
+
+        # Hide contents initially (collapsed)
+        for i in range(th_layout.count()):
+            w = th_layout.itemAt(i).widget()
+            if w:
+                w.setVisible(False)
+        self.training_hparams_group.toggled.connect(
+            lambda checked: self._toggle_group(self.training_hparams_group, checked))
+        layout.addWidget(self.training_hparams_group)
+
+        # --- Per-Model Hyperparameters (collapsible) ---
+        self.model_hparams_group = QGroupBox("Model Hyperparameters")
+        self.model_hparams_group.setCheckable(True)
+        self.model_hparams_group.setChecked(False)
+        self._mh_layout = QGridLayout(self.model_hparams_group)
+        self._mh_layout.setSpacing(6)
+
+        # ResNet1DOptimized params
+        self._mh_base_filters_label = QLabel("Base Filters")
+        self._mh_layout.addWidget(self._mh_base_filters_label, 0, 0)
+        self.resnet_base_filters_spin = QDoubleSpinBox()
+        self.resnet_base_filters_spin.setRange(8, 512)
+        self.resnet_base_filters_spin.setDecimals(0)
+        self.resnet_base_filters_spin.setSingleStep(8)
+        self.resnet_base_filters_spin.setValue(64)
+        self._mh_layout.addWidget(self.resnet_base_filters_spin, 0, 1)
+
+        self._mh_dropout_label = QLabel("Dropout")
+        self._mh_layout.addWidget(self._mh_dropout_label, 1, 0)
+        self.resnet_dropout_spin = QDoubleSpinBox()
+        self.resnet_dropout_spin.setRange(0.0, 0.9)
+        self.resnet_dropout_spin.setDecimals(2)
+        self.resnet_dropout_spin.setSingleStep(0.05)
+        self.resnet_dropout_spin.setValue(0.2)
+        self._mh_layout.addWidget(self.resnet_dropout_spin, 1, 1)
+
+        self._mh_no_params_label = QLabel("No editable hyperparameters for this model.")
+        self._mh_layout.addWidget(self._mh_no_params_label, 0, 0, 1, 2)
+
+        # Hide all initially
+        for i in range(self._mh_layout.count()):
+            w = self._mh_layout.itemAt(i).widget()
+            if w:
+                w.setVisible(False)
+        self.model_hparams_group.toggled.connect(
+            lambda checked: self._on_model_hparams_toggled(checked))
+        self.model_combo.currentTextChanged.connect(self._update_model_hparams_visibility)
+        layout.addWidget(self.model_hparams_group)
+
         # Training Parameters
-        #layout.addSpacing(10)
         params_layout = QGridLayout()
-        #params_layout.setSpacing(12)
         
-        self.params = {
-            "Training Samples": "8,000",
-            "Validation Samples": "2,000",
-            "Batch Size": "32",
-            "Epochs": "10"
+        # We define these as class attributes so we can access them in update_training_progress
+        self.val_labels = {
+            "Training Samples": QLabel("0"),
+            "Validation Samples": QLabel("0"),
+            "Batch Size": QLabel(str(self.batch_spin.value())),
+            "Epochs": QLabel(str(self.epochs_spin.value()))
         }
         
-        for i, (label, value) in enumerate(self.params.items()):
+        for i, (label, widget) in enumerate(self.val_labels.items()):
             label_widget = QLabel(label)
             label_widget.setProperty("class", "stat-label")
-            value_widget = QLabel(value)
-            value_widget.setProperty("class", "stat-value")
-            value_widget.setAlignment(Qt.AlignRight)
+            
+            widget.setProperty("class", "stat-value")
+            widget.setAlignment(Qt.AlignRight)
+            
             params_layout.addWidget(label_widget, i, 0)
-            params_layout.addWidget(value_widget, i, 1)
-        
+            params_layout.addWidget(widget, i, 1)
+            
+        # Connect changes in input to the display labels immediately
+        self.batch_spin.valueChanged.connect(lambda v: self.val_labels["Batch Size"].setText(str(v)))
+        self.epochs_spin.valueChanged.connect(lambda v: self.val_labels["Epochs"].setText(str(v)))
+
         layout.addLayout(params_layout)
         
         # Progress section
@@ -172,14 +270,74 @@ class MLTrainingTab(QWidget):
         self.status_label.setProperty("class", "stat-label")
         layout.addWidget(self.status_label)
         
-        return panel
+        # Wrap in scroll area so the panel doesn't compress
+        scroll = QScrollArea()
+        scroll.setObjectName("card")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _toggle_group(self, group, checked):
+        """Show/hide all child widgets inside a QGroupBox."""
+        group_layout = group.layout()
+        for i in range(group_layout.count()):
+            w = group_layout.itemAt(i).widget()
+            if w:
+                w.setVisible(checked)
+        # For the model hparams group, also apply model-specific visibility
+        if group is self.model_hparams_group and checked:
+            self._update_model_hparams_visibility(self.model_combo.currentText())
+
+    def _on_model_hparams_toggled(self, checked):
+        """Handle model hyperparameters group toggle."""
+        self._toggle_group(self.model_hparams_group, checked)
+
+    def _update_model_hparams_visibility(self, model_name):
+        """Show/hide model-specific hyperparameter widgets based on selected model."""
+        if not self.model_hparams_group.isChecked():
+            return
+        is_resnet = model_name == 'ResNet1DOptimized'
+        self._mh_base_filters_label.setVisible(is_resnet)
+        self.resnet_base_filters_spin.setVisible(is_resnet)
+        self._mh_dropout_label.setVisible(is_resnet)
+        self.resnet_dropout_spin.setVisible(is_resnet)
+        self._mh_no_params_label.setVisible(not is_resnet)
 
     def add_data_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Data Folder", os.path.expanduser("~"))
         if not folder:
             return
+
+        # Check if folder contains class subfolders (each subfolder = a class)
+        subdirs = [d for d in sorted(os.listdir(folder))
+                   if os.path.isdir(os.path.join(folder, d))]
+        subdir_with_files = []
+        for d in subdirs:
+            files = self._gather_dataset_files(os.path.join(folder, d))
+            if files:
+                subdir_with_files.append((d, files))
+
+        if subdir_with_files:
+            # Auto-add each subfolder as a separate class
+            for sub_label, files in subdir_with_files:
+                label = sub_label
+                orig_label = label
+                i = 1
+                while label in self.datasets:
+                    label = f"{orig_label}_{i}"
+                    i += 1
+                self.datasets[label] = files
+                item = QListWidgetItem(f"{label} ({len(files)} files)")
+                item.setData(Qt.UserRole, label)
+                self.dataset_list.addItem(item)
+            self.clear_data_btn.setEnabled(True)
+            self.status_label.setText(f"Loaded {len(subdir_with_files)} classes from {os.path.basename(folder)}")
+            self._update_train_button_state()
+            return
+
+        # Fallback: treat folder itself as a single class
         label = os.path.basename(folder.rstrip(os.sep)) or folder
-        # ensure unique label
         orig_label = label
         i = 1
         while label in self.datasets:
@@ -188,7 +346,7 @@ class MLTrainingTab(QWidget):
 
         files = self._gather_dataset_files(folder)
         if not files:
-            self.status_label.setText("No supported files in selected folder")
+            self.status_label.setText("No supported files (.npy/.npz/.csv) found")
             return
 
         self.datasets[label] = files
@@ -226,7 +384,13 @@ class MLTrainingTab(QWidget):
     def _update_train_button_state(self):
         # enable training only when there are at least two classes with files
         valid_classes = [k for k, v in self.datasets.items() if v]
-        self.train_btn.setEnabled(len(valid_classes) >= 2)
+        can_train = len(valid_classes) >= 2
+        self.train_btn.setEnabled(can_train)
+        if valid_classes and not can_train:
+            self.status_label.setText(
+                f"Need at least 2 classes to train (currently {len(valid_classes)}). "
+                "Add more data folders or use Batch Generate on the Waveform tab."
+            )
 
     def _gather_dataset_files(self, folder):
         """Return list of candidate data files in folder (.npy, .npz, .csv)."""
@@ -316,7 +480,7 @@ class MLTrainingTab(QWidget):
             
             # Legend
             legend = self.create_legend(
-                [("→ Training Accuracy", "#10b981"), ("→ Validation Accuracy", "#a855f7")]
+                [("→ Training Accuracy", "#3b82f6"), ("→ Validation Accuracy", "#fb923c")]
             )
         
         layout.addLayout(legend)
@@ -338,6 +502,47 @@ class MLTrainingTab(QWidget):
         legend_layout.addStretch()
         return legend_layout
     
+    def quick_load_dataset(self):
+        """Auto-load class folders from waveform_data/ directory."""
+        # Use script directory rather than CWD to find waveform_data
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(script_dir)  # parent of tabs/
+        waveform_dir = os.path.join(base_dir, 'waveform_data')
+
+        # Fallback to CWD if not found relative to script
+        if not os.path.isdir(waveform_dir):
+            waveform_dir = os.path.join(os.getcwd(), 'waveform_data')
+
+        if not os.path.isdir(waveform_dir):
+            self.status_label.setText("No waveform_data/ directory found")
+            return
+
+        self.clear_datasets()
+        loaded = 0
+        for entry in sorted(os.listdir(waveform_dir)):
+            class_dir = os.path.join(waveform_dir, entry)
+            if not os.path.isdir(class_dir):
+                continue
+            files = self._gather_dataset_files(class_dir)
+            if not files:
+                continue
+            label = entry
+            self.datasets[label] = files
+            item = QListWidgetItem(f"{label} ({len(files)} files)")
+            item.setData(Qt.UserRole, label)
+            self.dataset_list.addItem(item)
+            loaded += 1
+
+        if loaded > 0:
+            self.clear_data_btn.setEnabled(True)
+            self.status_label.setText(f"Loaded {loaded} classes from waveform_data/")
+        else:
+            self.status_label.setText(
+                f"No class subfolders with data found in {waveform_dir}. "
+                "Use Batch Generate on the Waveform tab first."
+            )
+        self._update_train_button_state()
+
     def start_training(self):
         """Handle training start button click"""
         # Lazy import to avoid breaking app if torch not installed
@@ -364,50 +569,93 @@ class MLTrainingTab(QWidget):
         if not file_label_pairs:
             self.status_label.setText("No supported files found in datasets")
             return
+        
+        # Read training hyperparameters from UI
+        lr = self.lr_spin.value()
+        val_split = self.val_split_spin.value()
+        weight_decay = self.weight_decay_spin.value()
+        label_smoothing = self.label_smoothing_spin.value()
+        grad_clip = self.grad_clip_spin.value()
+
+        total_files = len(file_label_pairs)
+        train_count = int(total_files * (1.0 - val_split))
+        val_count = total_files - train_count
+
+        # Update the UI labels with ACTUAL data numbers
+        self.val_labels["Training Samples"].setText(f"{train_count:,}")
+        self.val_labels["Validation Samples"].setText(f"{val_count:,}")
 
         # start TrainerThread
         model_name = self.model_combo.currentText()
         epochs = int(self.epochs_spin.value())
         batch_size = int(self.batch_spin.value())
 
-        self._trainer = TrainerThread(file_label_pairs, labels, model_name=model_name, epochs=epochs, batch_size=batch_size)
+        # Collect per-model hyperparameters
+        model_hparams = {}
+        if model_name == 'ResNet1DOptimized':
+            model_hparams['base_filters'] = int(self.resnet_base_filters_spin.value())
+            model_hparams['dropout'] = self.resnet_dropout_spin.value()
+
+        # Update progress bar max and clear charts
+        self.progress_bar.setMaximum(epochs)
+        self.progress_bar.setValue(0)
+        self.progress_value.setText(f"Epoch 0/{epochs}")
+        self.loss_chart.clear_data()
+        self.acc_chart.clear_data()
+
+        self._trainer = TrainerThread(
+            file_label_pairs, labels,
+            model_name=model_name, epochs=epochs, batch_size=batch_size,
+            lr=lr, val_split=val_split,
+            weight_decay=weight_decay, label_smoothing=label_smoothing,
+            grad_clip=grad_clip, model_hparams=model_hparams,
+        )
         self._trainer.progress.connect(self.update_training_progress)
         self._trainer.finished.connect(self.on_training_finished)
+
+        # Store labels for signal emission later
+        self._training_labels = labels
 
         self.status_label.setText("Training...")
         self.train_btn.setEnabled(False)
         self._trainer.start()
-        print(f"Trainer started: model={model_name}, epochs={epochs}, batch_size={batch_size}")
-    
-    def update_training_progress(self, epoch, total_epochs, train_loss, val_loss, train_acc, val_acc):
-        """Update the training progress and charts
+        print(f"Trainer started: model={model_name}, epochs={epochs}, batch_size={batch_size}, lr={lr}")
         
-        Args:
-            epoch: Current epoch number
-            total_epochs: Total number of epochs
-            train_loss: Training loss value
-            val_loss: Validation loss value
-            train_acc: Training accuracy value
-            val_acc: Validation accuracy value
-        """
+    def update_training_progress(self, epoch, total_epochs, train_loss, val_loss, train_acc, val_acc):
+        """Update the training progress and labels with dynamic values"""
+        
+        # 1. Update Progress Bar & Text
         self.progress_bar.setValue(epoch)
         self.progress_value.setText(f"Epoch {epoch}/{total_epochs}")
         
-        # Update loss chart
+        # 2. Update Charts
         self.loss_chart.add_data_point(train_loss, val_loss)
-        
-        # Update accuracy chart
         self.acc_chart.add_data_point(train_acc, val_acc)
         
+        # 3. Update the Grid Labels (Dynamic values)
+        # We can use the 'Epochs' label to show current/total
+        self.val_labels["Epochs"].setText(f"{epoch} / {total_epochs}")
+        
+        # 4. Update Status Label
+        # Multiplying by 100 assuming trainer sends 0.0-1.0 range
+        metrics_text = f"Epoch {epoch}: Loss {train_loss:.4f} | Acc {train_acc*100:.1f}%"
+        self.status_label.setText(metrics_text)
+
+        # 5. Handle Completion
         if epoch >= total_epochs:
-            self.status_label.setText("Training Complete")
+            self.status_label.setText(f"✅ Complete | Final Acc: {val_acc*100:.1f}%")
             self.train_btn.setEnabled(True)
             self.train_btn.setText("▶  Start Training")
+    
+
 
     def on_training_finished(self, model_path):
         if model_path:
             self.status_label.setText(f"Training finished — saved: {model_path}")
             print(f"Model saved to: {model_path}")
+            # Notify inference tab
+            labels = getattr(self, '_training_labels', [])
+            self.trained_model_ready.emit(model_path, labels)
         else:
             self.status_label.setText("Training finished (no model saved)")
         self.train_btn.setEnabled(True)
