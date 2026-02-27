@@ -1,11 +1,12 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QComboBox, QFrame,
-                               QSlider, QTabWidget, QDoubleSpinBox)
+                               QSlider, QTabWidget, QDoubleSpinBox, QSpinBox)
 from PySide6.QtCore import Qt
 
 from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 import numpy as np
 from datetime import datetime
+import os
 
 
 class WaveformSelectionTab(QWidget):
@@ -53,17 +54,6 @@ class WaveformSelectionTab(QWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(10)
-        
-        # Title
-        #title_layout = QVBoxLayout()
-        #title = QLabel("📡 RF Signal Configuration")
-        #title.setProperty("class", "section-title")
-        #subtitle = QLabel("Configure signal generation parameters")
-        #subtitle.setProperty("class", "section-subtitle")
-        #title_layout.addWidget(title)
-        #title_layout.addWidget(subtitle)
-        #title_layout.setSpacing(4)
-        #layout.addLayout(title_layout)
 
         # Waveform (Modulation Type)
         layout.addWidget(QLabel("Waveform"))
@@ -76,16 +66,16 @@ class WaveformSelectionTab(QWidget):
         self.fs_spin = QDoubleSpinBox()
         self.fs_spin.setRange(0.1, 1000)
         self.fs_spin.setDecimals(2)
-        self.fs_spin.setValue(self.fs / 1e6)
-        self.fs_spin.valueChanged.connect(lambda v: setattr(self, "fs", v * 1e6))
+        self.fs_spin.setValue(self.fs / 1e6)  # Convert to MHz for display
+        self.fs_spin.valueChanged.connect(lambda v: setattr(self, "fs", v * 1e6))  # Convert back to Hz
         layout.addWidget(self.fs_spin)
 
         # fc
         layout.addWidget(QLabel("Carrier Frequency fc (MHz)"))
         self.fc_spin = QDoubleSpinBox()
         self.fc_spin.setRange(0.1, 200)
-        self.fc_spin.setValue(self.fc / 1e6)
-        self.fc_spin.valueChanged.connect(lambda v: setattr(self, "fc", v * 1e6))
+        self.fc_spin.setValue(self.fc / 1e6)  # Convert to MHz for display
+        self.fc_spin.valueChanged.connect(lambda v: setattr(self, "fc", v * 1e6))  # Convert back to Hz
         layout.addWidget(self.fc_spin)
 
         # var
@@ -111,8 +101,8 @@ class WaveformSelectionTab(QWidget):
         layout.addWidget(QLabel("Symbol Period Tsymb (µs)"))
         self.tsymb_spin = QDoubleSpinBox()
         self.tsymb_spin.setRange(0.01, 100.0)
-        self.tsymb_spin.setValue(self.Tsymb * 1e6)
-        self.tsymb_spin.valueChanged.connect(lambda v: setattr(self, "Tsymb", v * 1e-6))
+        self.tsymb_spin.setValue(self.Tsymb * 1e6)  # Convert to microseconds for display
+        self.tsymb_spin.valueChanged.connect(lambda v: setattr(self, "Tsymb", v * 1e-6))  # Convert back to seconds
         layout.addWidget(self.tsymb_spin)
 
 
@@ -162,8 +152,6 @@ class WaveformSelectionTab(QWidget):
         )
         layout.addWidget(self.output_type_combo)
 
-        #layout.addStretch()
-
         generate_btn = QPushButton("▶ Generate Dataset")
         generate_btn.clicked.connect(self.generate_dataset)
         layout.addWidget(generate_btn)
@@ -171,6 +159,25 @@ class WaveformSelectionTab(QWidget):
         save_btn = QPushButton("💾 Save to Dataset Manager")
         save_btn.clicked.connect(self.save_to_dataset_manager)
         layout.addWidget(save_btn)
+        
+        # Batch generation section
+        batch_label = QLabel("Batch Generation")
+        batch_label.setProperty("class", "section-title")
+        layout.addWidget(batch_label)
+        
+        # Number of samples input
+        batch_layout = QHBoxLayout()
+        batch_layout.addWidget(QLabel("Samples per modulation:"))
+        self.batch_samples_spin = QSpinBox()
+        self.batch_samples_spin.setRange(1, 1000)
+        self.batch_samples_spin.setValue(10)
+        batch_layout.addWidget(self.batch_samples_spin)
+        layout.addLayout(batch_layout)
+        
+        # Batch generate button
+        batch_btn = QPushButton("📦 Batch Generate")
+        batch_btn.clicked.connect(self.batch_generate)
+        layout.addWidget(batch_btn)
         
         return panel
     
@@ -277,8 +284,8 @@ class WaveformSelectionTab(QWidget):
         var = self.var
         pulse_shape = self.pulse_shape_combo.currentText()
 
-        # Enforce Nyquist (only for passband; fc is metadata-only for baseband)
-        if self.output_type == "passband" and fc >= fs / 2:
+        # Enforce Nyquist
+        if fc >= fs / 2:
             raise ValueError(f"Invalid parameters: fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
 
         # Validate: fs * Tsymb must be an integer (samples per symbol)
@@ -311,31 +318,156 @@ class WaveformSelectionTab(QWidget):
 
 
     def save_to_dataset_manager(self):
+        """Save the currently generated waveform to datasets folder with JSON metadata"""
         if self.current_data is None:
-            print("No waveform generated yet to save.")
+            print("✗ No waveform generated yet. Generate a dataset first.")
             return
         
-        timestamp = datetime.now().isoformat()
-        name = f"{self.current_modulation}_{self.M}_{timestamp}"
-
+        # Create datasets directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(script_dir)  # parent of tabs/
+        datasets_dir = os.path.join(base_dir, 'datasets')
+        os.makedirs(datasets_dir, exist_ok=True)
+        
+        # Create a unique name with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = f"{self.current_modulation}_{int(self.M)}_{timestamp}"
+        
+        # Save signal data
+        signal_path = os.path.join(datasets_dir, f"{name}.npy")
+        np.save(signal_path, self.current_data)
+        
+        # Create metadata
         metadata = {
+            'name': name,
             'modulation': self.current_modulation,
-            'M': self.M,
+            'M': int(self.M),
             'fc': self.fc,
+            'fs': self.current_fs,
             'Tsymb': self.Tsymb,
             'Nsymb': self.Nsymb,
             'alpha': self.alpha,
             'span': self.span,
             'pulse_shape': self.pulse_shape_combo.currentText(),
+            'samples': len(self.current_data),
             'output_type': self.output_type,
+            'timestamp': timestamp,
             'source': 'generated'
         }
-
+        
+        # Save metadata as JSON
+        import json
+        metadata_path = os.path.join(datasets_dir, f"{name}.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Add to dataset manager
         self.dataset_manager.add_dataset(
-            name = name,
-            signal = self.current_data,
-            fs = self.current_fs,
-            metadata = metadata
+            name=name,
+            signal=self.current_data,
+            fs=self.current_fs,
+            metadata=metadata
         )
+        
+        print(f"✓ Saved to datasets/{name}.npy and {name}.json")
 
-        print(f"Saved to Dataset Manager as '{name}'")
+    
+    def batch_generate(self):
+        """Generate multiple datasets with random parameters"""
+        import json
+        import random
+        
+        num_samples = self.batch_samples_spin.value()
+        modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
+        
+        # M values for each modulation type
+        m_values = {
+            "PAM": [2, 4, 8, 16],
+            "QAM": [4, 16, 64],
+            "PSK": [2, 4, 8],
+            "FSK": [2, 4, 8],
+            "FHSS": [4, 8, 16]
+        }
+        
+        # Create datasets directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(script_dir)
+        datasets_dir = os.path.join(base_dir, "datasets")
+        os.makedirs(datasets_dir, exist_ok=True)
+        
+        from backend.waveform_pipeline import WaveformPipeline
+        pipeline = WaveformPipeline(self.matlab)
+        
+        total = num_samples * len(modulations)
+        count = 0
+        
+        print(f"Starting batch generation: {num_samples} samples × {len(modulations)} modulations = {total} total")
+        
+        for modulation in modulations:
+            for i in range(num_samples):
+                try:
+                    # Randomly select M for this modulation
+                    M = random.choice(m_values[modulation])
+                    
+                    # Use current UI parameters
+                    fs = self.fs
+                    Tsymb = self.Tsymb
+                    fc = self.fc
+                    alpha = self.alpha
+                    span = self.span
+                    Nsymb = self.Nsymb
+                    pulse_shape = self.pulse_shape_combo.currentText()
+                    
+                    # Generate
+                    result = pipeline.generate(
+                        fs=fs,
+                        Tsymb=Tsymb,
+                        Nsymb=Nsymb,
+                        fc=fc,
+                        M=M,
+                        modulation=modulation,
+                        var=self.var,
+                        alpha=alpha,
+                        span=span,
+                        pulse_shape=pulse_shape
+                    )
+                    
+                    data = result["signal"]
+                    
+                    # Create unique name
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    name = f"{modulation}_{M}_{timestamp}"
+                    
+                    # Save signal
+                    signal_path = os.path.join(datasets_dir, f"{name}.npy")
+                    np.save(signal_path, data)
+                    
+                    # Create and save metadata
+                    metadata = {
+                        "name": name,
+                        "modulation": modulation,
+                        "M": int(M),
+                        "fc": fc,
+                        "fs": fs,
+                        "Tsymb": Tsymb,
+                        "Nsymb": Nsymb,
+                        "alpha": alpha,
+                        "span": span,
+                        "pulse_shape": pulse_shape,
+                        "samples": len(data),
+                        "timestamp": timestamp,
+                        "source": "batch_generated"
+                    }
+                    
+                    metadata_path = os.path.join(datasets_dir, f"{name}.json")
+                    with open(metadata_path, "w") as f:
+                        json.dump(metadata, f, indent=2)
+                    
+                    count += 1
+                    if count % 10 == 0:
+                        print(f"Progress: {count}/{total}")
+                    
+                except Exception as e:
+                    print(f"✗ Error generating {modulation} M={M}: {e}")
+        
+        print(f"✓ Batch generation complete: {count}/{total} datasets saved to datasets/")
