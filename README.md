@@ -87,6 +87,19 @@ models/                    # trained model snapshots (`.pth`, etc.)
    python main_window.py
    ```
 
+On the very first launch the application will display a multi‑page setup wizard
+(with the rest of the GUI visible behind it).  The wizard:
+
+* gives a **quick tour** of the four main tabs (waveform, channel, ML, inference)
+  with explanatory text and arrows to advance;
+* lets the user pick folders for models and datasets and shows the detected GPU
+  count, offering CPU/GPU mode selection;
+* ends with a short tips & tricks page describing navigation and how to reopen
+  the wizard later from the Help menu.
+
+Your answers are stored in Qt settings and the wizard is suppressed on subsequent
+starts; delete the settings or use the menu item to see it again.
+
 If MATLAB is available and the engine is installed, the app will attempt to start it and add `waveform_functions` to the MATLAB path, allowing you to call custom MATLAB waveform generators. If not, waveform generation will be disabled and the GUI will still launch, but certain buttons will be inactive.
 
 ---
@@ -102,7 +115,7 @@ If MATLAB is available and the engine is installed, the app will attempt to star
 
 ## License
 
-Include your license information here (e.g., MIT, GPL, proprietary, etc.).
+TODO
 
 ---
 
