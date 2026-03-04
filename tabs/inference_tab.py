@@ -13,10 +13,12 @@ import torch
 class InferenceResultsTab(QWidget):
     """Model inference and evaluation tab"""
     
-    def __init__(self):
+    def __init__(self, dataset_manager=None):
         super().__init__()
+        self.dataset_manager = dataset_manager
         self.model = None
         self.model_path = None
+        self.class_labels = []   # set from trained_model_ready signal or manual load
         self.eval_data = None
         self.eval_labels = None
         self.setup_ui()
@@ -28,41 +30,63 @@ class InferenceResultsTab(QWidget):
         layout.setSpacing(15)
         
         # Header
-        title = QLabel("📊 Model Evaluation")
+        title = QLabel("Model Evaluation")
         title.setProperty("class", "section-title")
         subtitle = QLabel("Load a trained model and evaluate on test data")
         subtitle.setProperty("class", "section-subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
         
-        # Control panel
-        control_layout = QHBoxLayout()
-        
+        # ── Model loading card ────────────────────────────────────────────
+        model_card = QFrame()
+        model_card.setObjectName("card")
+        mc_layout = QVBoxLayout(model_card)
+        mc_layout.setContentsMargins(16, 12, 16, 12)
+        mc_layout.setSpacing(6)
+
+        model_row = QHBoxLayout()
         self.load_model_btn = QPushButton("Load Model (.pth)")
         self.load_model_btn.clicked.connect(self.load_model)
-        control_layout.addWidget(self.load_model_btn)
-        
+        model_row.addWidget(self.load_model_btn)
         self.model_label = QLabel("No model loaded")
         self.model_label.setProperty("class", "stat-label")
-        control_layout.addWidget(self.model_label)
-        
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
-        
-        # Data panel
-        data_layout = QHBoxLayout()
-        
+        model_row.addWidget(self.model_label)
+        model_row.addStretch()
+        mc_layout.addLayout(model_row)
+
+        labels_row = QHBoxLayout()
+        labels_row.addWidget(QLabel("Classes:"))
+        self.class_labels_label = QLabel("—")
+        self.class_labels_label.setProperty("class", "stat-label")
+        labels_row.addWidget(self.class_labels_label)
+        labels_row.addStretch()
+        mc_layout.addLayout(labels_row)
+        layout.addWidget(model_card)
+
+        # ── Test data loading card ────────────────────────────────────────
+        data_card = QFrame()
+        data_card.setObjectName("card")
+        dc_layout = QVBoxLayout(data_card)
+        dc_layout.setContentsMargins(16, 12, 16, 12)
+        dc_layout.setSpacing(6)
+
+        data_btn_row = QHBoxLayout()
         self.load_data_btn = QPushButton("Load Test Data Folder")
         self.load_data_btn.clicked.connect(self.load_test_data)
         self.load_data_btn.setEnabled(False)
-        data_layout.addWidget(self.load_data_btn)
-        
+        data_btn_row.addWidget(self.load_data_btn)
+
+        self.load_registry_btn = QPushButton("📂 Load from Datasets Registry")
+        self.load_registry_btn.clicked.connect(self.load_from_registry)
+        self.load_registry_btn.setEnabled(False)
+        data_btn_row.addWidget(self.load_registry_btn)
+        data_btn_row.addStretch()
+        dc_layout.addLayout(data_btn_row)
+
         self.data_label = QLabel("No test data loaded")
         self.data_label.setProperty("class", "stat-label")
-        data_layout.addWidget(self.data_label)
-        
-        data_layout.addStretch()
-        layout.addLayout(data_layout)
+        dc_layout.addWidget(self.data_label)
+        layout.addWidget(data_card)
         
         # Evaluation tabs
         self.eval_tabs = QTabWidget()
@@ -143,21 +167,91 @@ class InferenceResultsTab(QWidget):
         
         return widget
     
+    def on_trained_model_ready(self, model_path: str, labels: list):
+        """Slot connected to MLTrainingTab.trained_model_ready.
+        Auto-loads the freshly trained model and stores class labels."""
+        self.class_labels = labels
+        self.class_labels_label.setText(", ".join(labels) if labels else "—")
+        self._do_load_model(model_path, num_classes=len(labels) if labels else 2)
+        self.load_data_btn.setEnabled(True)
+        if self.dataset_manager is not None:
+            self.load_registry_btn.setEnabled(True)
+
+    def load_from_registry(self):
+        """Load test signals from the DatasetManager, grouped by modulation."""
+        if self.dataset_manager is None:
+            return
+
+        entries = self.dataset_manager.scan()
+        base_entries = [e for e in entries if not e.get('augmented', False)]
+        if not base_entries:
+            self.data_label.setText("No datasets in registry")
+            return
+
+        # Build label → index map from known class_labels or infer from data
+        if self.class_labels:
+            label_map = {lbl: i for i, lbl in enumerate(self.class_labels)}
+        else:
+            mods = sorted({e.get('modulation', e['name']) for e in base_entries})
+            label_map = {m: i for i, m in enumerate(mods)}
+            self.class_labels = list(label_map.keys())
+            self.class_labels_label.setText(", ".join(self.class_labels))
+
+        X_list, y_list = [], []
+        for entry in base_entries:
+            mod = entry.get('modulation', entry['name'])
+            if mod not in label_map:
+                continue
+            try:
+                sig = self.dataset_manager.load_signal(entry)
+                X_list.append(np.asarray(sig, dtype=np.float32).ravel())
+                y_list.append(label_map[mod])
+            except Exception as e:
+                print(f"[InferenceTab] Could not load {entry['name']}: {e}")
+
+        if not X_list:
+            self.data_label.setText("Failed to load any signals from registry")
+            return
+
+        self._build_eval_tensors(X_list, y_list)
+        self.data_label.setText(
+            f"Loaded {len(X_list)} signals from registry ({len(label_map)} classes)"
+        )
+
     def load_model(self):
-        """Load a trained PyTorch model"""
+        """Load a trained PyTorch model from disk."""
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Select Model File", os.path.expanduser("~"),
             "PyTorch Models (*.pth);;All Files (*)"
         )
         if not filepath:
             return
-        
+
+        # Check for a companion JSON sidecar with class labels
+        import json as _json
+        sidecar = os.path.splitext(filepath)[0] + ".json"
+        if os.path.exists(sidecar):
+            try:
+                with open(sidecar) as f:
+                    info = _json.load(f)
+                self.class_labels = info.get("class_labels", [])
+                self.class_labels_label.setText(
+                    ", ".join(self.class_labels) if self.class_labels else "—"
+                )
+            except Exception:
+                pass
+
+        num_classes = len(self.class_labels) if self.class_labels else 2
+        self._do_load_model(filepath, num_classes=num_classes)
+        if self.dataset_manager is not None:
+            self.load_registry_btn.setEnabled(True)
+
+    def _do_load_model(self, filepath: str, num_classes: int = 2):
+        """Internal: load model weights and update UI."""
         try:
             from backend.torch_models import get_model
-            # Try to load state dict
             state_dict = torch.load(filepath, map_location='cpu')
-            # We don't know the num_classes yet, so use a default and update if needed
-            self.model = get_model('SimpleCNN', num_classes=2)
+            self.model = get_model('SimpleCNN', num_classes=num_classes)
             self.model.load_state_dict(state_dict)
             self.model.eval()
             self.model_path = filepath
@@ -165,61 +259,83 @@ class InferenceResultsTab(QWidget):
             self.load_data_btn.setEnabled(True)
         except Exception as e:
             self.model_label.setText(f"Failed to load: {e}")
-            print(f"Error loading model: {e}")
+            print(f"[InferenceTab] Error loading model: {e}")
     
     def load_test_data(self):
-        """Load test data from a folder (same structure as training)"""
+        """Load test data from a folder. Each subfolder = one class."""
         folder = QFileDialog.getExistingDirectory(self, "Select Test Data Folder")
         if not folder:
             return
-        
+
         try:
-            # Gather files
-            exts = ('.npy', '.npz', '.csv')
-            files = []
-            for entry in os.listdir(folder):
-                path = os.path.join(folder, entry)
-                if os.path.isfile(path) and entry.lower().endswith(exts):
-                    files.append(path)
-            
-            if not files:
+            subdirs = sorted([
+                d for d in os.listdir(folder)
+                if os.path.isdir(os.path.join(folder, d))
+            ])
+
+            X_list, y_list = [], []
+
+            if subdirs:
+                # Subfolder-per-class layout
+                label_map = (
+                    {lbl: i for i, lbl in enumerate(self.class_labels)}
+                    if self.class_labels else {}
+                )
+                inferred = []
+                for subdir in subdirs:
+                    if subdir in label_map:
+                        idx = label_map[subdir]
+                    else:
+                        idx = len(inferred)
+                        inferred.append(subdir)
+                    class_path = os.path.join(folder, subdir)
+                    for fname in sorted(os.listdir(class_path)):
+                        fpath = os.path.join(class_path, fname)
+                        if os.path.isfile(fpath) and fname.lower().endswith(('.npy', '.npz', '.csv')):
+                            arr = self._load_array(fpath)
+                            if arr is not None:
+                                X_list.append(np.asarray(arr, dtype=np.float32).ravel())
+                                y_list.append(idx)
+                if inferred and not self.class_labels:
+                    self.class_labels = subdirs
+                    self.class_labels_label.setText(", ".join(self.class_labels))
+            else:
+                # Flat folder — sequential label fallback
+                n_cls = max(len(self.class_labels), 2)
+                for i, fname in enumerate(sorted(os.listdir(folder))):
+                    fpath = os.path.join(folder, fname)
+                    if os.path.isfile(fpath) and fname.lower().endswith(('.npy', '.npz', '.csv')):
+                        arr = self._load_array(fpath)
+                        if arr is not None:
+                            X_list.append(np.asarray(arr, dtype=np.float32).ravel())
+                            y_list.append(i % n_cls)
+
+            if not X_list:
                 self.data_label.setText("No supported files found")
                 return
-            
-            # Load all samples
-            X_list, y_list = [], []
-            for i, path in enumerate(files):
-                arr = self._load_array(path)
-                if arr is None:
-                    continue
-                arr = np.asarray(arr).ravel()
-                X_list.append(arr)
-                y_list.append(i % 2)  # Simple binary classification fallback
-            
-            if not X_list:
-                self.data_label.setText("Failed to load any files")
-                return
-            
-            max_len = max([a.size for a in X_list])
-            X = np.zeros((len(X_list), max_len), dtype=np.float32)
-            for i, a in enumerate(X_list):
-                L = min(len(a), max_len)
-                X[i, :L] = a[:L]
-            
-            X = X[..., np.newaxis]
-            X = np.transpose(X, (0, 2, 1))
-            
-            self.eval_data = torch.from_numpy(X)
-            self.eval_labels = np.asarray(y_list, dtype=np.int64)
-            
-            self.data_label.setText(f"Loaded {len(files)} samples")
-            self.eval_cm_btn.setEnabled(True)
-            self.eval_report_btn.setEnabled(True)
-            self.eval_roc_btn.setEnabled(True)
-            self.eval_tabs.setEnabled(True)
+
+            self._build_eval_tensors(X_list, y_list)
+            self.data_label.setText(f"Loaded {len(X_list)} samples from folder")
+
         except Exception as e:
             self.data_label.setText(f"Error loading data: {e}")
-            print(f"Error: {e}")
+            print(f"[InferenceTab] Error: {e}")
+
+    def _build_eval_tensors(self, X_list: list, y_list: list):
+        """Pad and stack signal arrays into eval tensors; enable eval buttons."""
+        max_len = max(a.size for a in X_list)
+        X = np.zeros((len(X_list), max_len), dtype=np.float32)
+        for i, a in enumerate(X_list):
+            L = min(len(a), max_len)
+            X[i, :L] = a[:L]
+        # Shape: (N, 1, L) — standard 1-D CNN input
+        X = X[:, np.newaxis, :]
+        self.eval_data = torch.from_numpy(X)
+        self.eval_labels = np.asarray(y_list, dtype=np.int64)
+        self.eval_cm_btn.setEnabled(True)
+        self.eval_report_btn.setEnabled(True)
+        self.eval_roc_btn.setEnabled(True)
+        self.eval_tabs.setEnabled(True)
     
     def _load_array(self, path):
         """Load array from file"""
@@ -240,51 +356,63 @@ class InferenceResultsTab(QWidget):
         """Compute and display confusion matrix"""
         if self.model is None or self.eval_data is None:
             return
-        
+
         try:
             with torch.no_grad():
                 outputs = self.model(self.eval_data)
                 _, predictions = outputs.max(1)
-            
+
             y_pred = predictions.cpu().numpy()
             cm = confusion_matrix(self.eval_labels, y_pred)
-            
+
             self.cm_figure.clear()
             ax = self.cm_figure.add_subplot(111)
             im = ax.imshow(cm, cmap='Blues', interpolation='nearest')
             ax.set_xlabel('Predicted')
             ax.set_ylabel('True')
             ax.set_title('Confusion Matrix')
-            
-            # Add text annotations
+
+            if self.class_labels and len(self.class_labels) == cm.shape[0]:
+                ax.set_xticks(range(cm.shape[1]))
+                ax.set_yticks(range(cm.shape[0]))
+                ax.set_xticklabels(self.class_labels, rotation=45, ha='right', fontsize=8)
+                ax.set_yticklabels(self.class_labels, fontsize=8)
+
+            thresh = cm.max() / 2.0
             for i in range(cm.shape[0]):
                 for j in range(cm.shape[1]):
-                    ax.text(j, i, str(cm[i, j]), ha='center', va='center', color='white')
-            
+                    color = 'white' if cm[i, j] > thresh else 'black'
+                    ax.text(j, i, str(cm[i, j]), ha='center', va='center', color=color)
+
             self.cm_figure.colorbar(im, ax=ax)
+            self.cm_figure.tight_layout()
             self.cm_canvas.draw()
         except Exception as e:
-            print(f"Error computing confusion matrix: {e}")
+            print(f"[InferenceTab] Error computing confusion matrix: {e}")
     
     def evaluate_report(self):
         """Compute and display classification report"""
         if self.model is None or self.eval_data is None:
             return
-        
+
         try:
             with torch.no_grad():
                 outputs = self.model(self.eval_data)
                 _, predictions = outputs.max(1)
-            
+
             y_pred = predictions.cpu().numpy()
-            report = classification_report(self.eval_labels, y_pred, zero_division=0)
+            target_names = self.class_labels if self.class_labels else None
+            report = classification_report(
+                self.eval_labels, y_pred,
+                target_names=target_names,
+                zero_division=0
+            )
             accuracy = (y_pred == self.eval_labels).mean()
-            
             text = f"Accuracy: {accuracy:.4f}\n\n{report}"
             self.report_label.setText(text)
         except Exception as e:
             self.report_label.setText(f"Error: {e}")
-            print(f"Error: {e}")
+            print(f"[InferenceTab] Error: {e}")
     
     def evaluate_roc(self):
         """Compute and display ROC curve (binary classification only)"""

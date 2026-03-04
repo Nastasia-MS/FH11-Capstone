@@ -8,16 +8,18 @@ import numpy as np
 
 from widgets.training_chart import TrainingChartWidget
 
-#TODO: Add import data input to ML
 
 class MLTrainingTab(QWidget):
     """ML Training configuration and visualization tab"""
     # Emitted when a model finishes training: (model_path, class_labels_list)
     trained_model_ready = Signal(str, list)
 
-    def __init__(self):
+    def __init__(self, dataset_manager=None):
         super().__init__()
+        self.dataset_manager = dataset_manager
         self.setup_ui()
+        if self.dataset_manager is not None:
+            self.load_registry_btn.setEnabled(True)
         
     def setup_ui(self):
         """Initialize the UI components"""
@@ -52,6 +54,12 @@ class MLTrainingTab(QWidget):
         self.add_data_btn.clicked.connect(self.add_data_folder)
         data_btn_layout.addWidget(self.add_data_btn)
 
+        self.load_registry_btn = QPushButton("📂 Load from Datasets")
+        self.load_registry_btn.setToolTip("Group datasets by modulation type and load as training classes")
+        self.load_registry_btn.clicked.connect(self.load_from_registry)
+        self.load_registry_btn.setEnabled(False)
+        data_btn_layout.addWidget(self.load_registry_btn)
+
         self.quick_load_btn = QPushButton("📦 Quick Load Dataset")
         self.quick_load_btn.setToolTip("Auto-load class folders from waveform_data/ directory")
         self.quick_load_btn.clicked.connect(self.quick_load_dataset)
@@ -80,6 +88,19 @@ class MLTrainingTab(QWidget):
         self.model_combo = QComboBox()
         self.model_combo.addItems(["SimpleCNN", "TinyConv", "MLP", "ResNet1DOptimized"])
         layout.addWidget(self.model_combo)
+
+        # Model save path (optional override)
+        from PySide6.QtWidgets import QLineEdit
+        save_row = QHBoxLayout()
+        save_row.addWidget(QLabel("Save model to:"))
+        self.model_save_path_edit = QLineEdit()
+        self.model_save_path_edit.setPlaceholderText("Default: models/ folder")
+        self.model_save_path_edit.setReadOnly(True)
+        save_row.addWidget(self.model_save_path_edit, 1)
+        browse_save_btn = QPushButton("Browse…")
+        browse_save_btn.clicked.connect(self._browse_save_path)
+        save_row.addWidget(browse_save_btn)
+        layout.addLayout(save_row)
 
         # Epochs and batch size controls
         epoch_layout = QHBoxLayout()
@@ -467,7 +488,7 @@ class MLTrainingTab(QWidget):
         
         # Chart
         if chart_type == "loss":
-            self.loss_chart = TrainingChartWidget("Loss", "Loss")
+            self.loss_chart = TrainingChartWidget("Loss", "Loss", cap_at_one=False)
             layout.addWidget(self.loss_chart)
             
             # Legend
@@ -475,7 +496,7 @@ class MLTrainingTab(QWidget):
                 [("→ Training Loss", "#3b82f6"), ("→ Validation Loss", "#fb923c")]
             )
         else:  # accuracy
-            self.acc_chart = TrainingChartWidget("Accuracy", "Accuracy (%)")
+            self.acc_chart = TrainingChartWidget("Accuracy", "Accuracy (%)", cap_at_one=True)
             layout.addWidget(self.acc_chart)
             
             # Legend
@@ -502,6 +523,56 @@ class MLTrainingTab(QWidget):
         legend_layout.addStretch()
         return legend_layout
     
+    def load_from_registry(self):
+        """Load datasets from the shared DatasetManager, grouped by modulation as classes."""
+        if self.dataset_manager is None:
+            return
+
+        entries = self.dataset_manager.scan()
+        base_entries = [e for e in entries if not e.get('augmented', False)]
+
+        if not base_entries:
+            self.status_label.setText("No datasets in registry — generate some first.")
+            return
+
+        from collections import defaultdict
+        by_modulation = defaultdict(list)
+        for entry in base_entries:
+            mod = entry.get('modulation', entry['name'])
+            npy = entry.get('_npy_path', '')
+            if npy:
+                by_modulation[mod].append(npy)
+
+        if len(by_modulation) < 2:
+            self.status_label.setText(
+                f"Only {len(by_modulation)} modulation class(es) found — need ≥ 2. "
+                "Use Batch Generate on the Waveform tab."
+            )
+
+        added = 0
+        for mod, files in sorted(by_modulation.items()):
+            label = mod
+            base_label = label
+            i = 1
+            while label in self.datasets:
+                label = f"{base_label}_{i}"
+                i += 1
+            self.datasets[label] = files
+            item = QListWidgetItem(f"{label} ({len(files)} files) [registry]")
+            item.setData(Qt.UserRole, label)
+            self.dataset_list.addItem(item)
+            added += 1
+
+        self.clear_data_btn.setEnabled(True)
+        self.status_label.setText(f"Loaded {added} class(es) from registry")
+        self._update_train_button_state()
+
+    def _browse_save_path(self):
+        """Let the user pick a directory to save the trained model into."""
+        folder = QFileDialog.getExistingDirectory(self, "Select Model Save Folder")
+        if folder:
+            self.model_save_path_edit.setText(folder)
+
     def quick_load_dataset(self):
         """Auto-load class folders from waveform_data/ directory."""
         # Use script directory rather than CWD to find waveform_data
@@ -603,12 +674,23 @@ class MLTrainingTab(QWidget):
         self.loss_chart.clear_data()
         self.acc_chart.clear_data()
 
+        # Resolve model save directory: UI override → QSettings modelPath → project models/
+        from PySide6.QtCore import QSettings
+        save_dir = self.model_save_path_edit.text().strip()
+        if not save_dir:
+            save_dir = QSettings("MyCompany", "MixedSignalGUI").value("modelPath", "")
+        if not save_dir:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            save_dir = os.path.join(os.path.dirname(script_dir), "models")
+        os.makedirs(save_dir, exist_ok=True)
+
         self._trainer = TrainerThread(
             file_label_pairs, labels,
             model_name=model_name, epochs=epochs, batch_size=batch_size,
             lr=lr, val_split=val_split,
             weight_decay=weight_decay, label_smoothing=label_smoothing,
             grad_clip=grad_clip, model_hparams=model_hparams,
+            save_dir=save_dir,
         )
         self._trainer.progress.connect(self.update_training_progress)
         self._trainer.finished.connect(self.on_training_finished)

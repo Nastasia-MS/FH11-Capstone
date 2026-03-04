@@ -45,11 +45,10 @@ class ChannelNoiseTab(QWidget):
         self.rt_last_taps = None
         self.sionna_widget = None  # lazy-created
 
+        self._active_entry = None   # currently selected metadata dict
+
         self.setup_ui()
         self.refresh_dataset_list()
-
-        if self.dataset_manager.get_active():
-            self.display_original_signal()
 
     def setup_ui(self):
         """Initialize the UI components"""
@@ -857,11 +856,9 @@ class ChannelNoiseTab(QWidget):
             return
 
         # Set engine frequency from dataset metadata before computing paths.
-        # The scene's material properties depend on the carrier frequency.
-        dataset = self.dataset_manager.get_active()
-        if dataset:
-            metadata = dataset.get('metadata', {})
-            fc = metadata.get('fc', None)
+        entry = self._active_entry
+        if entry:
+            fc = entry.get('fc', None)
             if fc is not None:
                 try:
                     self.sionna_widget.set_frequency_ghz(float(fc) / 1e9)
@@ -1092,108 +1089,125 @@ class ChannelNoiseTab(QWidget):
         return container
 
     def on_dataset_changed(self, name: str):
-        if name and name != "No datasets loaded":
-            self.dataset_manager.set_active(name)
-            self.display_original_signal()
-            self._update_stochastic_metadata()
-            self._update_rt_metadata()
+        if name and name != "No datasets found":
+            entry = self.dataset_manager.get_by_name(name)
+            if entry:
+                self._active_entry = entry
+                self.display_original_signal()
+                self._update_stochastic_metadata()
+                self._update_rt_metadata()
 
     def _update_stochastic_metadata(self):
         """Auto-populate read-only carrier freq / sample rate from dataset metadata."""
-        dataset = self.dataset_manager.get_active()
-        if dataset is None:
+        entry = self._active_entry
+        if entry is None:
             self.carrier_freq_display.setText("--")
             self.sample_rate_display.setText("--")
             return
 
-        fs = dataset['fs']
-        metadata = dataset.get('metadata', {})
-        fc = metadata.get('fc', None)
+        fs = entry['fs']
+        fc = entry.get('fc', None)
 
         self.sample_rate_display.setText(f"{fs / 1e6:.4g}")
-        if fc is not None:
-            self.carrier_freq_display.setText(f"{float(fc) / 1e6:.4g}")
-        else:
-            self.carrier_freq_display.setText("N/A")
+        self.carrier_freq_display.setText(f"{float(fc) / 1e6:.4g}" if fc is not None else "N/A")
 
         # Default output_num_samples to signal length
-        sig_len = len(dataset['signal'])
+        sig_len = entry['samples']
         self.output_num_samples = sig_len
         self.output_samples_spin.setValue(sig_len)
 
     def _update_rt_metadata(self):
         """Auto-populate read-only RT fields from dataset metadata."""
-        dataset = self.dataset_manager.get_active()
-        if dataset is None:
+        entry = self._active_entry
+        if entry is None:
             self.rt_freq_display.setText("--")
             self.rt_sample_rate_display.setText("--")
             return
 
-        fs = dataset['fs']
-        metadata = dataset.get('metadata', {})
-        fc = metadata.get('fc', None)
+        fs = entry['fs']
+        fc = entry.get('fc', None)
 
         self.rt_sample_rate_display.setText(f"{fs / 1e6:.4g}")
-        if fc is not None:
-            self.rt_freq_display.setText(f"{float(fc) / 1e6:.4g}")
-        else:
-            self.rt_freq_display.setText("N/A")
+        self.rt_freq_display.setText(f"{float(fc) / 1e6:.4g}" if fc is not None else "N/A")
 
     def upload_dataset(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Open Dataset", "", "NumPy Files (*.npy);;All Files (*)")
-
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Import External Dataset", "", "NumPy Files (*.npy);;All Files (*)"
+        )
         if not filepath:
             return
 
         try:
-            signal = np.load(filepath)
+            from PySide6.QtWidgets import QInputDialog
+            fs_str, ok = QInputDialog.getText(
+                self, "Sample Rate",
+                "Enter sample rate (Hz) for this dataset:",
+                text="8000000"
+            )
+            if not ok:
+                return
+            try:
+                fs = float(fs_str)
+            except ValueError:
+                print("Invalid sample rate — import cancelled.")
+                return
 
-            from pathlib import Path
-            name = Path(filepath).stem
-
-            fs = 8e6
             metadata = {
-                'source': 'uploaded',
-                'filepath': filepath
+                'source': 'imported',
+                'fs':     fs,
             }
-
-            self.dataset_manager.add_dataset(name, signal, fs, metadata)
+            entry = self.dataset_manager.import_external(filepath, metadata)
             self.refresh_dataset_list()
-
-            print(f"Uploaded dataset: {name}")
+            # Select the newly imported dataset
+            self.dataset_combo.setCurrentText(entry['name'])
+            print(f"[ChannelTab] Imported: {entry['name']}")
 
         except Exception as e:
-            print(f"Failed to upload dataset: {e}")
+            print(f"Failed to import dataset: {e}")
 
     def refresh_dataset_list(self):
+        self.dataset_combo.blockSignals(True)
         self.dataset_combo.clear()
-        datasets = self.dataset_manager.list_datasets()
+        entries = self.dataset_manager.scan()
 
-        if datasets:
-            self.dataset_combo.addItems(datasets)
-            active = self.dataset_manager.active_dataset
-            if active and active in datasets:
-                self.dataset_combo.setCurrentText(active)
+        if entries:
+            names = [e['name'] for e in entries]
+            self.dataset_combo.addItems(names)
+            # Re-select active entry if it still exists
+            if self._active_entry and self._active_entry['name'] in names:
+                self.dataset_combo.setCurrentText(self._active_entry['name'])
+            else:
+                self.dataset_combo.setCurrentIndex(0)
         else:
-            self.dataset_combo.addItem("No datasets loaded")
+            self.dataset_combo.addItem("No datasets found")
 
-        print(f"Dataset list refreshed: {datasets}")
+        self.dataset_combo.blockSignals(False)
+
+        # Trigger a load if we have a valid selection
+        current = self.dataset_combo.currentText()
+        if current and current != "No datasets found":
+            self.on_dataset_changed(current)
+
+        print(f"[ChannelTab] Dataset list refreshed: {self.dataset_combo.count()} entries")
 
     def display_original_signal(self):
-        dataset = self.dataset_manager.get_active()
-        if dataset is None:
-            print("No active dataset to display")
+        entry = self._active_entry
+        if entry is None:
+            print("[ChannelTab] No active dataset to display")
             return
 
-        self.clean_signal = dataset['signal']
-        self.clean_fs = dataset['fs']
-        self.clean_metadata = dataset.get('metadata', {})
+        try:
+            self.clean_signal = self.dataset_manager.load_signal(entry)
+            self.clean_fs = entry['fs']
+            self.clean_metadata = entry   # entire entry is the metadata
+        except Exception as e:
+            print(f"[ChannelTab] Failed to load signal: {e}")
 
     # ---- Config builders ----
     def _build_stochastic_config(self):
-        dataset = self.dataset_manager.get_active()
-        metadata = dataset.get('metadata', {}) if dataset else {}
-        fs = dataset['fs'] if dataset else 8e6
+        entry = self._active_entry or {}
+        metadata = entry
+        fs = entry.get('fs', 8e6)
         return {
             "seed": self.stoch_seed,
             "waveform": {
@@ -1231,18 +1245,15 @@ class ChannelNoiseTab(QWidget):
 
     def _build_rt_config(self):
         """Build multiantenna_config.json-schema dict from SionnaWidget state."""
-        # Push channel params to widget before reading config
         self._rt_push_channel_params()
         config = self.sionna_widget.get_rt_config()
 
-        # Overlay dataset metadata
-        dataset = self.dataset_manager.get_active()
-        if dataset:
-            metadata = dataset.get('metadata', {})
-            fc = metadata.get('fc', None)
+        entry = self._active_entry
+        if entry:
+            fc = entry.get('fc', None)
             if fc is not None:
                 config["center_frequency"] = float(fc)
-            config["sample_rate"] = dataset['fs']
+            config["sample_rate"] = entry['fs']
 
         return config
 
@@ -1373,83 +1384,45 @@ class ChannelNoiseTab(QWidget):
 
     def save_augmented_dataset(self):
         if not hasattr(self, 'last_augmented_signal'):
-            print("No augmented signal to save")
+            print("[ChannelTab] No augmented signal to save. Apply augmentations first.")
             return
 
-        active_name = self.dataset_manager.active_dataset
-        if not active_name:
-            active_name = "dataset"
+        entry = self._active_entry
+        base_name = entry['name'] if entry else "dataset"
+        aug_name = self.dataset_manager._unique_name(f"{base_name}_augmented")
 
-        aug_name = f"{active_name}_augmented"
-        counter = 1
-        while aug_name in self.dataset_manager.datasets:
-            aug_name = f"{active_name}_augmented_{counter}"
-            counter += 1
+        # Build augmentation metadata on top of original entry
+        metadata = dict(entry) if entry else {}
+        # Drop internal path keys — they will be re-set by save()
+        metadata.pop('_npy_path', None)
+        metadata.pop('_json_path', None)
 
-        # Get original metadata
-        original_dataset = self.dataset_manager.get_active()
-        metadata = original_dataset['metadata'].copy() if original_dataset else {}
-
-        # Build structured augmentation metadata
         metadata['augmented'] = True
-        metadata['base_dataset'] = active_name
+        metadata['base_dataset'] = base_name
+        metadata['fs'] = self.last_augmented_fs
+        metadata['source'] = 'augmented'
 
         if self.active_subtab == 1:
-            # Stochastic: save full CLIP_datagen config
-            config = self._build_stochastic_config()
+            aug_config = self._build_stochastic_config()
+            aug_config["waveform"]["path"] = f"{aug_name}.npy"
             metadata['augmentation_type'] = 'stochastic_tdl'
-            metadata['augmentation_config'] = config
+            metadata['augmentation_config'] = aug_config
         elif self.active_subtab == 2:
-            # RT: save full multiantenna_config.json config
-            config = self._build_rt_config()
+            aug_config = self._build_rt_config()
+            aug_config["transmitters"][0]["waveform_path"] = f"{aug_name}.npy"
             metadata['augmentation_type'] = 'sionna_rt'
-            metadata['augmentation_config'] = config
+            metadata['augmentation_config'] = aug_config
         else:
-            # AWGN: structured params
             metadata['augmentation_type'] = 'awgn'
             metadata['augmentation_config'] = {
-                'awgn': {
-                    'enabled': self.awgn_enabled,
-                    'snr_db': self.snr_db,
-                },
-                'amp_phase': {
-                    'enabled': self.amp_phase_enabled,
-                    'amplitude': self.amplitude,
-                    'phase_deg': self.phase_deg,
-                },
+                'awgn':      {'enabled': self.awgn_enabled, 'snr_db': self.snr_db},
+                'amp_phase': {'enabled': self.amp_phase_enabled,
+                              'amplitude': self.amplitude, 'phase_deg': self.phase_deg},
+                'freq_shift': {'enabled': self.freq_shift_enabled,
+                               'freq_shift_hz': self.freq_shift_hz},
             }
 
-        # Store in DatasetManager in-memory
-        self.dataset_manager.add_dataset(
-            aug_name,
-            self.last_augmented_signal,
-            self.last_augmented_fs,
-            metadata
-        )
+        saved = self.dataset_manager.save(aug_name, self.last_augmented_signal, metadata)
+        self._active_entry = saved
         self.refresh_dataset_list()
-        print(f"Saved augmented dataset in memory: {aug_name}")
-
-        # Prompt for disk export
-        export_dir = QFileDialog.getExistingDirectory(self, "Export Augmented Dataset To...")
-        if export_dir:
-            npy_path = os.path.join(export_dir, f"{aug_name}.npy")
-            json_path = os.path.join(export_dir, f"{aug_name}.json")
-
-            np.save(npy_path, self.last_augmented_signal)
-
-            # Build config JSON for disk
-            if self.active_subtab == 1:
-                disk_config = self._build_stochastic_config()
-                # Point waveform.path to the companion .npy
-                disk_config["waveform"]["path"] = f"{aug_name}.npy"
-            elif self.active_subtab == 2:
-                disk_config = self._build_rt_config()
-                # Point waveform_path to the companion .npy for runConfigs.py compat
-                disk_config["transmitters"][0]["waveform_path"] = f"{aug_name}.npy"
-            else:
-                disk_config = metadata['augmentation_config']
-
-            with open(json_path, 'w') as f:
-                json.dump(disk_config, f, indent=2, default=str)
-
-            print(f"Exported to disk: {npy_path}, {json_path}")
+        print(f"[ChannelTab] Saved augmented dataset: {aug_name}")

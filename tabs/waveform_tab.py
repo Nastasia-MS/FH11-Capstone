@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt
 from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 import numpy as np
 from datetime import datetime
-import os
 
 
 class WaveformSelectionTab(QWidget):
@@ -318,156 +317,95 @@ class WaveformSelectionTab(QWidget):
 
 
     def save_to_dataset_manager(self):
-        """Save the currently generated waveform to datasets folder with JSON metadata"""
+        """Save the currently generated waveform to the datasets folder."""
         if self.current_data is None:
             print("✗ No waveform generated yet. Generate a dataset first.")
             return
-        
-        # Create datasets directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.dirname(script_dir)  # parent of tabs/
-        datasets_dir = os.path.join(base_dir, 'datasets')
-        os.makedirs(datasets_dir, exist_ok=True)
-        
-        # Create a unique name with timestamp
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = f"{self.current_modulation}_{int(self.M)}_{timestamp}"
-        
-        # Save signal data
-        signal_path = os.path.join(datasets_dir, f"{name}.npy")
-        np.save(signal_path, self.current_data)
-        
-        # Create metadata
+
         metadata = {
-            'name': name,
-            'modulation': self.current_modulation,
-            'M': int(self.M),
-            'fc': self.fc,
-            'fs': self.current_fs,
-            'Tsymb': self.Tsymb,
-            'Nsymb': self.Nsymb,
-            'alpha': self.alpha,
-            'span': self.span,
+            'source':      'generated',
+            'modulation':  self.current_modulation,
+            'M':           int(self.M),
+            'fc':          self.fc,
+            'fs':          self.current_fs,
+            'Tsymb':       self.Tsymb,
+            'Nsymb':       self.Nsymb,
+            'alpha':       self.alpha,
+            'span':        self.span,
             'pulse_shape': self.pulse_shape_combo.currentText(),
-            'samples': len(self.current_data),
             'output_type': self.output_type,
-            'timestamp': timestamp,
-            'source': 'generated'
+            'timestamp':   timestamp,
         }
-        
-        # Save metadata as JSON
-        import json
-        metadata_path = os.path.join(datasets_dir, f"{name}.json")
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        # Add to dataset manager
-        self.dataset_manager.add_dataset(
-            name=name,
-            signal=self.current_data,
-            fs=self.current_fs,
-            metadata=metadata
-        )
-        
-        print(f"✓ Saved to datasets/{name}.npy and {name}.json")
+
+        self.dataset_manager.save(name, self.current_data, metadata)
+        print(f"✓ Saved dataset: {name}")
 
     
     def batch_generate(self):
-        """Generate multiple datasets with random parameters"""
-        import json
+        """Generate multiple datasets with random parameters for each modulation."""
         import random
-        
+
         num_samples = self.batch_samples_spin.value()
         modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
-        
-        # M values for each modulation type
+
         m_values = {
-            "PAM": [2, 4, 8, 16],
-            "QAM": [4, 16, 64],
-            "PSK": [2, 4, 8],
-            "FSK": [2, 4, 8],
-            "FHSS": [4, 8, 16]
+            "PAM":  [2, 4, 8, 16],
+            "QAM":  [4, 16, 64],
+            "PSK":  [2, 4, 8],
+            "FSK":  [2, 4, 8],
+            "FHSS": [4, 8, 16],
         }
-        
-        # Create datasets directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.dirname(script_dir)
-        datasets_dir = os.path.join(base_dir, "datasets")
-        os.makedirs(datasets_dir, exist_ok=True)
-        
+
         from backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)
-        
+
         total = num_samples * len(modulations)
         count = 0
-        
-        print(f"Starting batch generation: {num_samples} samples × {len(modulations)} modulations = {total} total")
-        
+        print(f"Starting batch generation: {num_samples} x {len(modulations)} = {total} total")
+
         for modulation in modulations:
-            for i in range(num_samples):
+            for _ in range(num_samples):
                 try:
-                    # Randomly select M for this modulation
                     M = random.choice(m_values[modulation])
-                    
-                    # Use current UI parameters
-                    fs = self.fs
-                    Tsymb = self.Tsymb
-                    fc = self.fc
-                    alpha = self.alpha
-                    span = self.span
-                    Nsymb = self.Nsymb
-                    pulse_shape = self.pulse_shape_combo.currentText()
-                    
-                    # Generate
                     result = pipeline.generate(
-                        fs=fs,
-                        Tsymb=Tsymb,
-                        Nsymb=Nsymb,
-                        fc=fc,
+                        fs=self.fs,
+                        Tsymb=self.Tsymb,
+                        Nsymb=self.Nsymb,
+                        fc=self.fc,
                         M=M,
                         modulation=modulation,
                         var=self.var,
-                        alpha=alpha,
-                        span=span,
-                        pulse_shape=pulse_shape
+                        alpha=self.alpha,
+                        span=self.span,
+                        pulse_shape=self.pulse_shape_combo.currentText(),
                     )
-                    
                     data = result["signal"]
-                    
-                    # Create unique name
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     name = f"{modulation}_{M}_{timestamp}"
-                    
-                    # Save signal
-                    signal_path = os.path.join(datasets_dir, f"{name}.npy")
-                    np.save(signal_path, data)
-                    
-                    # Create and save metadata
+
                     metadata = {
-                        "name": name,
-                        "modulation": modulation,
-                        "M": int(M),
-                        "fc": fc,
-                        "fs": fs,
-                        "Tsymb": Tsymb,
-                        "Nsymb": Nsymb,
-                        "alpha": alpha,
-                        "span": span,
-                        "pulse_shape": pulse_shape,
-                        "samples": len(data),
-                        "timestamp": timestamp,
-                        "source": "batch_generated"
+                        "source":      "batch_generated",
+                        "modulation":  modulation,
+                        "M":           int(M),
+                        "fc":          self.fc,
+                        "fs":          self.fs,
+                        "Tsymb":       self.Tsymb,
+                        "Nsymb":       self.Nsymb,
+                        "alpha":       self.alpha,
+                        "span":        self.span,
+                        "pulse_shape": self.pulse_shape_combo.currentText(),
+                        "timestamp":   timestamp,
                     }
-                    
-                    metadata_path = os.path.join(datasets_dir, f"{name}.json")
-                    with open(metadata_path, "w") as f:
-                        json.dump(metadata, f, indent=2)
-                    
+
+                    self.dataset_manager.save(name, data, metadata)
                     count += 1
                     if count % 10 == 0:
-                        print(f"Progress: {count}/{total}")
-                    
+                        print(f"  Progress: {count}/{total}")
+
                 except Exception as e:
-                    print(f"✗ Error generating {modulation} M={M}: {e}")
-        
-        print(f"✓ Batch generation complete: {count}/{total} datasets saved to datasets/")
+                    print(f"X Error generating {modulation} M={M}: {e}")
+
+        print(f"Batch complete: {count}/{total} datasets saved")
