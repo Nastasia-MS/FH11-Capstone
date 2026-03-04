@@ -1,162 +1,209 @@
 """
-Dataset Manager - Centralized dataset storage and management
+backend/dataset_manager.py
+
+Disk-based dataset registry. The datasets/ folder is the single source of
+truth. Every dataset is a pair of files:
+    <name>.npy   – the raw signal (NumPy array)
+    <name>.json  – metadata / config sidecar
+
+All tabs interact with DatasetManager to list, load, save, and import
+datasets. Nothing is stored in memory beyond the currently-active selection,
+which is owned by the UI (the combo box), not by this class.
 """
 
-import numpy as np
+from __future__ import annotations
+
 import json
-from pathlib import Path
-from typing import Dict, Optional, List
+import os
+import shutil
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Minimal required metadata keys for a valid sidecar
+# ---------------------------------------------------------------------------
+_REQUIRED_KEYS = {"name", "source", "fs", "samples"}
+
+
+def _validate(meta: dict) -> bool:
+    return _REQUIRED_KEYS.issubset(meta.keys())
 
 
 class DatasetManager:
-    """Manages datasets across the application"""
-    
-    def __init__(self):
-        self.datasets: Dict[str, dict] = {}
-        self.active_dataset: Optional[str] = None
-    
-    def add_dataset(self, name: str, signal: np.ndarray, fs: float, metadata: Optional[dict] = None):
+    """
+    Scan-on-demand, disk-backed registry of signal datasets.
+
+    Usage
+    -----
+    dm = DatasetManager(datasets_dir)
+    entries = dm.scan()           # list[dict]  – all metadata sidecars
+    signal  = dm.load_signal(entry)  # np.ndarray
+    dm.save(name, signal, metadata)  # writes .npy + .json
+    dm.import_external(npy_path, metadata)  # copies into datasets_dir
+    """
+
+    def __init__(self, datasets_dir: Optional[str] = None):
+        if datasets_dir is None:
+            # Fall back to <project_root>/datasets/ if no dir given
+            here = Path(__file__).resolve().parent
+            datasets_dir = str(here.parent / "datasets")
+        self.datasets_dir = Path(datasets_dir)
+        self.datasets_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Core API
+    # ------------------------------------------------------------------
+
+    def scan(self) -> list[dict]:
         """
-        Add a new dataset to the manager
-        
-        Args:
-            name: Unique identifier for the dataset
-            signal: Signal array (real or complex)
-            fs: Sampling frequency in Hz
-            metadata: Optional metadata (modulation type, SNR, etc.)
+        Return a list of metadata dicts for every valid .json sidecar found
+        in datasets_dir. Entries without a matching .npy are skipped.
+        Results are sorted newest-first by timestamp (falling back to name).
         """
-        if metadata is None:
-            metadata = {}
-        
-        self.datasets[name] = {
-            'signal': signal.copy(),
-            'fs': fs,
-            'metadata': metadata,
-            'timestamp': datetime.now().isoformat()
-        }
-        self.active_dataset = name
-        print(f"✓ Added dataset '{name}' ({len(signal)} samples, fs={fs/1e6:.1f} MHz)")
-    
-    def get_dataset(self, name: str) -> Optional[dict]:
-        """Retrieve a specific dataset by name"""
-        return self.datasets.get(name)
-    
-    def get_active(self) -> Optional[dict]:
-        """Get the currently active dataset"""
-        if self.active_dataset and self.active_dataset in self.datasets:
-            return self.datasets[self.active_dataset]
+        entries = []
+        for json_path in sorted(self.datasets_dir.glob("*.json")):
+            npy_path = json_path.with_suffix(".npy")
+            if not npy_path.exists():
+                continue
+            try:
+                with open(json_path) as f:
+                    meta = json.load(f)
+                if not _validate(meta):
+                    print(f"[DatasetManager] Skipping {json_path.name}: missing required keys")
+                    continue
+                # Always store absolute paths so callers don't have to know the dir
+                meta["_json_path"] = str(json_path)
+                meta["_npy_path"]  = str(npy_path)
+                entries.append(meta)
+            except Exception as e:
+                print(f"[DatasetManager] Could not read {json_path.name}: {e}")
+
+        # Sort newest-first; fall back to alphabetical by name
+        entries.sort(
+            key=lambda m: m.get("timestamp", m.get("name", "")),
+            reverse=True,
+        )
+        return entries
+
+    def load_signal(self, entry: dict) -> np.ndarray:
+        """Load and return the numpy array for a metadata entry from scan()."""
+        npy_path = entry.get("_npy_path") or str(
+            self.datasets_dir / (entry["name"] + ".npy")
+        )
+        return np.load(npy_path, allow_pickle=False)
+
+    def save(self, name: str, signal: np.ndarray, metadata: dict) -> dict:
+        """
+        Write signal + sidecar JSON into datasets_dir.
+
+        Parameters
+        ----------
+        name     : dataset name (used as filename stem)
+        signal   : NumPy array to save as <name>.npy
+        metadata : dict – must include at minimum: fs, source, samples
+
+        Returns the completed metadata dict (with _npy_path / _json_path).
+        """
+        meta = dict(metadata)
+        meta["name"] = name
+        meta.setdefault("samples", int(len(signal)))
+        meta.setdefault("timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
+
+        if not _validate(meta):
+            missing = _REQUIRED_KEYS - meta.keys()
+            raise ValueError(f"Metadata missing required keys: {missing}")
+
+        npy_path  = self.datasets_dir / f"{name}.npy"
+        json_path = self.datasets_dir / f"{name}.json"
+
+        np.save(str(npy_path), signal)
+        with open(json_path, "w") as f:
+            json.dump(meta, f, indent=2, default=str)
+
+        meta["_npy_path"]  = str(npy_path)
+        meta["_json_path"] = str(json_path)
+
+        print(f"[DatasetManager] Saved: {npy_path.name} + {json_path.name}")
+        return meta
+
+    def import_external(
+        self,
+        npy_path: str,
+        metadata: dict,
+        *,
+        copy: bool = True,
+    ) -> dict:
+        """
+        Register an external .npy file as a dataset.
+
+        Parameters
+        ----------
+        npy_path : path to the source .npy file
+        metadata : dict with at least: fs, source='imported'
+                   (name will be derived from filename if not given)
+        copy     : if True, copy the file into datasets_dir (default).
+                   Pass False to reference in-place (not recommended).
+
+        Returns the completed metadata dict.
+        """
+        src = Path(npy_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Source file not found: {npy_path}")
+
+        name = metadata.get("name") or src.stem
+        # Avoid collisions
+        name = self._unique_name(name)
+
+        if copy:
+            dst = self.datasets_dir / f"{name}.npy"
+            shutil.copy2(str(src), str(dst))
+        else:
+            dst = src
+
+        signal = np.load(str(dst), allow_pickle=False)
+
+        meta = dict(metadata)
+        meta.setdefault("source", "imported")
+        meta.setdefault("fs", 8e6)     # caller should always supply this
+        meta["samples"] = int(len(signal))
+
+        return self.save(name, signal, meta)
+
+    def delete(self, name: str) -> bool:
+        """Delete both files for a dataset. Returns True if deleted."""
+        npy  = self.datasets_dir / f"{name}.npy"
+        json_ = self.datasets_dir / f"{name}.json"
+        deleted = False
+        for p in (npy, json_):
+            if p.exists():
+                p.unlink()
+                deleted = True
+        return deleted
+
+    # ------------------------------------------------------------------
+    # Convenience helpers used by the UI
+    # ------------------------------------------------------------------
+
+    def names(self) -> list[str]:
+        """Sorted list of dataset names available on disk."""
+        return [e["name"] for e in self.scan()]
+
+    def get_by_name(self, name: str) -> Optional[dict]:
+        """Return the metadata entry for a given name, or None."""
+        for entry in self.scan():
+            if entry["name"] == name:
+                return entry
         return None
-    
-    def set_active(self, name: str) -> bool:
-        """Set a dataset as active"""
-        if name in self.datasets:
-            self.active_dataset = name
-            print(f"✓ Active dataset: '{name}'")
-            return True
-        return False
-    
-    def list_datasets(self) -> List[str]:
-        """List all available dataset names"""
-        return list(self.datasets.keys())
-    
-    def remove_dataset(self, name: str) -> bool:
-        """Remove a dataset"""
-        if name in self.datasets:
-            del self.datasets[name]
-            if self.active_dataset == name:
-                self.active_dataset = None
-            return True
-        return False
-    
-    def load_from_npy(self, filepath: str, name: Optional[str] = None, fs: float = 1.0, metadata: Optional[dict] = None) -> str:
-        """
-        Load dataset from .npy file
-        
-        Args:
-            filepath: Path to .npy file
-            name: Optional name (defaults to filename)
-            fs: Sampling frequency
-            metadata: Optional metadata
-            
-        Returns:
-            Name of loaded dataset
-        """
-        signal = np.load(filepath)
-        
-        if name is None:
-            name = Path(filepath).stem
-        
-        self.add_dataset(name, signal, fs, metadata)
+
+    def _unique_name(self, base: str) -> str:
+        """Append _1, _2 … until the name is not taken."""
+        name = base
+        counter = 1
+        while (self.datasets_dir / f"{name}.npy").exists():
+            name = f"{base}_{counter}"
+            counter += 1
         return name
-    
-    def save_to_npy(self, name: str, filepath: str):
-        """Save dataset to .npy file"""
-        dataset = self.get_dataset(name)
-        if dataset is None:
-            raise ValueError(f"Dataset '{name}' not found")
-        
-        np.save(filepath, dataset['signal'])
-        print(f"✓ Saved dataset '{name}' to {filepath}")
-    
-    def load_config(self, filepath: str) -> dict:
-        """Load dataset configuration from JSON file"""
-        with open(filepath, 'r') as f:
-            config = json.load(f)
-        return config
-    
-    def save_config(self, name: str, filepath: str):
-        """Save dataset metadata to JSON config file.
-
-        If the metadata contains an 'augmentation_config' dict (e.g. the
-        CLIP_datagen stochastic config), it is serialized directly so the
-        resulting JSON is self-contained and can reproduce the augmentation.
-        """
-        dataset = self.get_dataset(name)
-        if dataset is None:
-            raise ValueError(f"Dataset '{name}' not found")
-
-        metadata = dataset['metadata']
-
-        config = {
-            'name': name,
-            'fs': dataset['fs'],
-            'metadata': {},
-            'timestamp': dataset['timestamp'],
-            'signal_shape': list(dataset['signal'].shape),
-            'signal_dtype': str(dataset['signal'].dtype),
-        }
-
-        # Serialize metadata, handling numpy types and nested dicts
-        for k, v in metadata.items():
-            if isinstance(v, np.ndarray):
-                config['metadata'][k] = v.tolist()
-            elif isinstance(v, (np.integer,)):
-                config['metadata'][k] = int(v)
-            elif isinstance(v, (np.floating,)):
-                config['metadata'][k] = float(v)
-            else:
-                config['metadata'][k] = v
-
-        with open(filepath, 'w') as f:
-            json.dump(config, f, indent=2, default=str)
-
-        print(f"✓ Saved config for '{name}' to {filepath}")
-    
-    def get_info(self, name: str) -> Optional[dict]:
-        """Get summary information about a dataset"""
-        dataset = self.get_dataset(name)
-        if dataset is None:
-            return None
-        
-        signal = dataset['signal']
-        return {
-            'name': name,
-            'samples': len(signal),
-            'duration_ms': len(signal) / dataset['fs'] * 1000,
-            'fs_mhz': dataset['fs'] / 1e6,
-            'dtype': str(signal.dtype),
-            'is_complex': np.iscomplexobj(signal),
-            'metadata': dataset['metadata'],
-            'timestamp': dataset['timestamp']
-        }
