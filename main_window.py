@@ -23,6 +23,7 @@ from tabs.waveform_tab import WaveformSelectionTab
 from tabs.channel_tab import ChannelNoiseTab
 from tabs.ml_training_tab import MLTrainingTab
 from tabs.inference_tab import InferenceResultsTab
+from tabs.evaluate_model_tab import EvaluateModelTab
 from styles.stylesheet import get_stylesheet, SettingsDialog
 
 from backend.matlab_engine import MatlabEngine
@@ -348,12 +349,18 @@ class SignalDashboard(QMainWindow):
         
         self.inference_tab = InferenceResultsTab(dataset_manager=self.dataset_manager)
         self.content_stack.addWidget(self.inference_tab)
+
+        self.evaluate_tab = EvaluateModelTab(self.matlab, dataset_manager=self.dataset_manager)
+        self.content_stack.addWidget(self.evaluate_tab)
         
         main_layout.addWidget(self.content_stack, 1)
 
-        # Wire ML tab → Inference tab: auto-load model when training completes
+        # Wire ML tab → Inference + Evaluate tabs: auto-load model when training completes
         self.ml_training_tab.trained_model_ready.connect(
             self.inference_tab.on_trained_model_ready
+        )
+        self.ml_training_tab.trained_model_ready.connect(
+            self.evaluate_tab.receive_trained_model
         )
     
     def create_header(self, layout):
@@ -380,7 +387,7 @@ class SignalDashboard(QMainWindow):
         tab_layout.setSpacing(0)
         
         self.tab_buttons = []
-        tabs = ["Waveform Selection", "Channel & Noise", "ML Training", "Inference Results"]
+        tabs = ["Waveform Selection", "Channel & Noise", "ML Training", "Inference Results", "Evaluate Model"]
         
         for i, tab_name in enumerate(tabs):
             tab_btn = QPushButton(tab_name)
