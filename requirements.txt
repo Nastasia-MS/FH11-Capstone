@@ -8,5 +8,5 @@ tensorflow
 sionna
 sionna-rt
 PyOpenGL
-matplotlib
+umap-learn
 

@@ -24,6 +24,7 @@ from tabs.channel_tab import ChannelNoiseTab
 from tabs.ml_training_tab import MLTrainingTab
 from tabs.inference_tab import InferenceResultsTab
 from tabs.evaluate_model_tab import EvaluateModelTab
+from tabs.data_visualization_tab import DataVisualizationTab
 from styles.stylesheet import get_stylesheet, SettingsDialog
 
 from backend.matlab_engine import MatlabEngine
@@ -352,6 +353,9 @@ class SignalDashboard(QMainWindow):
 
         self.evaluate_tab = EvaluateModelTab(self.matlab, dataset_manager=self.dataset_manager)
         self.content_stack.addWidget(self.evaluate_tab)
+
+        self.data_viz_tab = DataVisualizationTab(dataset_manager=self.dataset_manager)
+        self.content_stack.addWidget(self.data_viz_tab)
         
         main_layout.addWidget(self.content_stack, 1)
 
@@ -387,7 +391,7 @@ class SignalDashboard(QMainWindow):
         tab_layout.setSpacing(0)
         
         self.tab_buttons = []
-        tabs = ["Waveform Selection", "Channel & Noise", "ML Training", "Inference Results", "Evaluate Model"]
+        tabs = ["Waveform Selection", "Channel & Noise", "ML Training", "Inference Results", "Evaluate Model", "Data Visualization"]
         
         for i, tab_name in enumerate(tabs):
             tab_btn = QPushButton(tab_name)
