@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                               QPushButton, QComboBox, QFrame,
+                               QPushButton, QComboBox, QFrame, QScrollArea,
                                QSlider, QTabWidget, QDoubleSpinBox, QSpinBox)
 from PySide6.QtCore import Qt
 
@@ -15,15 +15,15 @@ class WaveformSelectionTab(QWidget):
         self.matlab = matlab_engine
         self.dataset_manager = dataset_manager
 
-        # Core parameters (defaults chosen to be valid: fc < fs/2)
+        # Core parameters
         self.fc = 1e6 # Hz
         self.fs = 8e6
         self.var = 1.0
         self.alpha = 0.35
-        self.Tsymb = 1e-6 # seconds
+        self.Tsymb = 1e-6
         self.M = 4
         self.Nsymb = 256
-        self.span = 10 # symbols
+        self.span = 10
         self.modulation = "PAM"
         self.output_type = "passband"
 
@@ -36,12 +36,15 @@ class WaveformSelectionTab(QWidget):
     def setup_ui(self):
         """Initialize the UI components"""
         layout = QHBoxLayout(self)
-        #layout.setSpacing(20)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # Left panel - RF Signal Configuration
         left_panel = self.create_configuration_panel()
-        layout.addWidget(left_panel, 1)
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("card")
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout.addWidget(left_scroll, 1)
         
         right_panel = self.create_visualizations_panel()
         layout.addWidget(right_panel, 2)
@@ -49,7 +52,6 @@ class WaveformSelectionTab(QWidget):
     def create_configuration_panel(self):
         """Create the RF signal configuration panel"""
         panel = QFrame()
-        panel.setObjectName("card")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(10)
