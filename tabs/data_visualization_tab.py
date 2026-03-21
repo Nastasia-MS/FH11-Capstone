@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox, QScrollArea,
     QProgressBar, QMessageBox, QCheckBox, QGridLayout
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QEvent
 
 import matplotlib
 matplotlib.use("Agg")
@@ -101,11 +101,24 @@ class DimReduceThread(QThread):
 # ─────────────────────────────────────────────
 class ScatterCanvas2D(FigureCanvas):
     def __init__(self, parent=None):
-        self.fig = Figure(figsize=(5, 4), tight_layout=True)
+        self._last_plot_data = None
+        
+        bg, _, _ = self._theme()
+        self.fig = Figure(figsize=(5, 4), tight_layout=True, facecolor=bg)
         self.ax  = self.fig.add_subplot(111)
         super().__init__(self.fig)
         self.setParent(parent)
+        self.setStyleSheet("background: transparent;")
+        
         self._draw_placeholder("2D Visualization")
+    
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.PaletteChange:
+            if self._last_plot_data:
+                self.plot(*self._last_plot_data)
+            else:
+                self._draw_placeholder("2D Visualization")
+        super().changeEvent(event)
 
     def _theme(self):
         """Return (bg, fg, axes_bg) from the Qt application palette."""
@@ -126,6 +139,8 @@ class ScatterCanvas2D(FigureCanvas):
         self.draw()
 
     def plot(self, coords, labels, class_names, title="2D", visible_classes=None):
+        self._last_plot_data = (coords, labels, class_names, title, visible_classes)
+        
         bg, fg, axes_bg = self._theme()
         self.ax.clear()
         self.fig.patch.set_facecolor(bg)
@@ -156,10 +171,14 @@ class ScatterCanvas3D(FigureCanvas):
     _DEFAULT_AZIM = 45
 
     def __init__(self, parent=None):
-        self.fig = Figure(figsize=(5, 4), tight_layout=True)
+        self._last_plot_data = None
+        
+        bg, _, _ = self._theme()
+        self.fig = Figure(figsize=(5, 4), tight_layout=True, facecolor=bg)
         self.ax  = self.fig.add_subplot(111, projection="3d")
         super().__init__(self.fig)
         self.setParent(parent)
+        self.setStyleSheet("background: transparent;")
 
         # ── reduce rotation sensitivity ──────────────────────────────
         # Matplotlib's 3-D axes use mouse_init() to bind drag events.
@@ -176,6 +195,14 @@ class ScatterCanvas3D(FigureCanvas):
         self._last_title       = "3D"
 
         self._draw_placeholder("3D Visualization")
+    
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.PaletteChange:
+            if self._last_plot_data:
+                self.plot(*self._last_plot_data)
+            else:
+                self._draw_placeholder("3D Visualization")
+        super().changeEvent(event)
 
     # ── custom rotation handlers ─────────────────────────────────────
     def _on_press(self, event):
@@ -222,6 +249,8 @@ class ScatterCanvas3D(FigureCanvas):
         self.draw()
 
     def plot(self, coords, labels, class_names, title="3D", visible_classes=None):
+        self._last_plot_data = (coords, labels, class_names, title, visible_classes)
+        
         self._last_coords       = coords
         self._last_labels       = labels
         self._last_class_names  = class_names

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QWidget, QFontComboBox,
 )
 from PySide6.QtCore import Qt, QSettings, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPalette, QColor
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +513,45 @@ def get_stylesheet() -> str:
         border_radius = int(s.value("borderRadius", 6)),
         compact       = s.value("compact",      False, type=bool),
     )
+
+
+def apply_theme_palette(theme_name: str = None):
+    """
+    Set the Qt application palette to match the theme colors.
+    This is necessary for matplotlib plots to pick up theme changes.
+    """
+    from PySide6.QtWidgets import QApplication
+    
+    s = QSettings("MyCompany", "MixedSignalGUI")
+    theme_name = theme_name or s.value("theme", "Light (Default)")
+    t = THEMES.get(theme_name, THEMES["Light (Default)"])
+    
+    palette = QPalette()
+    
+    # Window colors (used by matplotlib for background)
+    palette.setColor(QPalette.Window, QColor(t["bg_main"]))
+    palette.setColor(QPalette.WindowText, QColor(t["text_primary"]))
+    
+    # Base colors (used by matplotlib for axes background)
+    palette.setColor(QPalette.Base, QColor(t["bg_card"]))
+    palette.setColor(QPalette.AlternateBase, QColor(t["bg_input"]))
+    
+    # Text colors
+    palette.setColor(QPalette.Text, QColor(t["text_primary"]))
+    palette.setColor(QPalette.BrightText, QColor(t["text_primary"]))
+    
+    # Button colors
+    palette.setColor(QPalette.Button, QColor(t["bg_input"]))
+    palette.setColor(QPalette.ButtonText, QColor(t["text_primary"]))
+    
+    # Highlight colors
+    palette.setColor(QPalette.Highlight, QColor(t["selection_bg"]))
+    palette.setColor(QPalette.HighlightedText, QColor(t["selection_fg"]))
+    
+    # Apply to application
+    app = QApplication.instance()
+    if app:
+        app.setPalette(palette)
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
-from PySide6.QtWidgets import QWidget, QLabel, QComboBox, QPushButton, QVBoxLayout, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QLabel, QComboBox, QPushButton, QVBoxLayout, QHBoxLayout, QApplication
+from PySide6.QtCore import QEvent
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
@@ -7,18 +8,83 @@ from scipy import signal
 
 from widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
 
+def _mpl_theme():
+    """Return (bg, fg, axes_bg) from the current Qt application palette."""
+    p = QApplication.palette()
+    return (p.window().color().name(),
+            p.windowText().color().name(),
+            p.base().color().name())
+
+
+def _apply_mpl_theme(fig, *axes):
+    """Apply current Qt palette colours to a matplotlib figure and axes list."""
+    bg, fg, axes_bg = _mpl_theme()
+    fig.patch.set_facecolor(bg)
+    for ax in axes:
+        ax.set_facecolor(axes_bg)
+        ax.tick_params(colors=fg)
+        ax.xaxis.label.set_color(fg)
+        ax.yaxis.label.set_color(fg)
+        ax.title.set_color(fg)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(fg)
+        leg = ax.get_legend()
+        if leg:
+            leg.get_frame().set_facecolor(axes_bg)
+            for text in leg.get_texts():
+                text.set_color(fg)
+    
+    # Handle colorbars
+    for ax in fig.get_axes():
+        # Check if this is a colorbar axes
+        if hasattr(ax, '_colorbar'):
+            cbar = ax._colorbar
+            cbar.ax.tick_params(colors=fg)
+            if cbar.ax.yaxis.label:
+                cbar.ax.yaxis.label.set_color(fg)
+            for spine in cbar.ax.spines.values():
+                spine.set_edgecolor(fg)
+
+
+def _theme_toolbar(toolbar):
+    """Style NavigationToolbar2QT to match the current Qt palette."""
+    p = QApplication.palette()
+    bg   = p.window().color().name()
+    fg   = p.windowText().color().name()
+    btn  = p.button().color().name()
+    toolbar.setStyleSheet(f"""
+        QToolBar {{
+            background: {bg};
+            border: none;
+            spacing: 2px;
+        }}
+        QToolButton {{
+            background: {btn};
+            color: {fg};
+            border: 1px solid transparent;
+            border-radius: 3px;
+            padding: 2px;
+        }}
+        QToolButton:hover  {{ border-color: {fg}; }}
+        QToolButton:checked {{ background: {fg}; color: {bg}; }}
+    """)
+
+
 class PlottingWidget(QWidget):
     def __init__(self):
         super().__init__()
                 
         layout = QVBoxLayout()
         
-        # Create matplotlib figure and canvas
-        self.figure = Figure(figsize=(8, 6))
+        # Create matplotlib figure and canvas — apply theme immediately
+        bg, _, _ = _mpl_theme()
+        self.figure = Figure(figsize=(8, 6), facecolor=bg)
         self.canvas = FigureCanvas(self.figure)
-        
-        # Add navigation toolbar for interactive controls (zoom, pan, etc.)
+        self.canvas.setStyleSheet("background: transparent;")
+
+        # Add navigation toolbar and theme it to match the app palette
         self.toolbar = NavigationToolbar(self.canvas, self)
+        _theme_toolbar(self.toolbar)
         
         # Add toolbar and canvas to layout
         layout.addWidget(self.toolbar)
@@ -31,11 +97,44 @@ class PlottingWidget(QWidget):
         
         self.setLayout(layout)
         
+        # Store last plot data for theme updates
+        self._last_plot_args = {}
+        
         # Initial plot
         self.plot_data()
+
+    def changeEvent(self, event):
+        """Re-theme figure and toolbar whenever the palette changes (e.g. theme switch)."""
+        if event.type() == QEvent.Type.PaletteChange:
+            _theme_toolbar(self.toolbar)
+            bg, _, _ = _mpl_theme()
+            self.figure.patch.set_facecolor(bg)
+            # Reapply theme to all existing axes
+            for ax in self.figure.get_axes():
+                _apply_mpl_theme(self.figure, ax)
+            self.canvas.draw_idle()
+            # Trigger a replot to regenerate content with new colors
+            self._replot_with_theme()
+        super().changeEvent(event)
+    
+    def _replot_with_theme(self):
+        """Regenerate plot with new theme colors."""
+        # Update toolbar theme
+        _theme_toolbar(self.toolbar)
+        
+        # Update figure background
+        bg, _, _ = _mpl_theme()
+        self.figure.patch.set_facecolor(bg)
+        
+        # Replot with the last stored arguments
+        if self._last_plot_args:
+            self.plot_data(**self._last_plot_args)
     
     def plot_data(self, t=None, signal=None, signal_q=None):
         """Generate and display a sample plot. If signal_q is provided, plots I and Q traces."""
+        # Store arguments for theme updates
+        self._last_plot_args = {'t': t, 'signal': signal, 'signal_q': signal_q}
+        
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 
@@ -49,8 +148,9 @@ class PlottingWidget(QWidget):
             ax.set_ylabel('Amplitude')
             ax.set_title('Waveform Plot')
             ax.legend()
-            ax.grid(True)
+            ax.grid(True, alpha=0.3)
 
+        _apply_mpl_theme(self.figure, ax)
         self.canvas.draw()
 
 
@@ -60,6 +160,9 @@ class FreqDomainPlot(PlottingWidget):
         
     def plot_data(self, freqs=None, fft=None):
         """Generate and display a sample plot"""
+        # Store arguments for theme updates
+        self._last_plot_args = {'freqs': freqs, 'fft': fft}
+        
         self.figure.clear()
         ax = self.figure.add_subplot(111)
      
@@ -69,8 +172,9 @@ class FreqDomainPlot(PlottingWidget):
             ax.set_ylabel('Magnitude')
             ax.set_title('Frequency Domain')
             ax.legend()
-            ax.grid(True)
-        
+            ax.grid(True, alpha=0.3)
+
+        _apply_mpl_theme(self.figure, ax)
         self.canvas.draw()
 
 
@@ -83,6 +187,13 @@ class IQDomainPlot(PlottingWidget):
                   modulation=None, alpha=0.35, span=8, pulse_shape='rrc',
                   nsymb=None):
         """Plot IQ constellation using matched filter demodulation."""
+        # Store arguments for theme updates
+        self._last_plot_args = {
+            'data': data, 'fs': fs, 'fc': fc, 'sps': sps, 'M': M,
+            'modulation': modulation, 'alpha': alpha, 'span': span,
+            'pulse_shape': pulse_shape, 'nsymb': nsymb
+        }
+        
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         
@@ -101,7 +212,8 @@ class IQDomainPlot(PlottingWidget):
         else:
             self._plot_constellation(ax, data, fs, fc, sps, M, modulation,
                                      alpha, span, pulse_shape, nsymb)
-        
+
+        _apply_mpl_theme(self.figure, ax)
         self.canvas.draw()
     
     def _plot_constellation(self, ax, data, fs, fc, sps, M, modulation,
@@ -240,6 +352,19 @@ class SpectrogramPlot(PlottingWidget):
         self.current_fs = None
         self.current_modulation = None
     
+    def _replot_with_theme(self):
+        """Regenerate spectrogram with new theme."""
+        # Update toolbar theme
+        _theme_toolbar(self.toolbar)
+        
+        # Update figure background
+        bg, _, _ = _mpl_theme()
+        self.figure.patch.set_facecolor(bg)
+        
+        # Regenerate plot
+        if self.current_x is not None and self.current_fs is not None:
+            self._update_plot()
+    
     def _create_controls(self):
         """Create minimal control panel"""
         controls_widget = QWidget()
@@ -352,5 +477,6 @@ class SpectrogramPlot(PlottingWidget):
             ax.set_ylim(0, fs/2)
         ax.grid(True, alpha=0.3, linestyle='--')
         
+        _apply_mpl_theme(self.figure, ax)
         self.figure.tight_layout()
         self.canvas.draw()

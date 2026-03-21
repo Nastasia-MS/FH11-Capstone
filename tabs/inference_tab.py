@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QPushButton, QComboBox, QGridLayout, QFrame, QFileDialog, QTabWidget)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
+from PySide6.QtWidgets import QApplication
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,6 +9,33 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc, roc_auc_score
 import torch
+
+
+def _mpl_theme():
+    """Get current theme colors from Qt palette."""
+    p = QApplication.palette()
+    return (p.window().color().name(),
+            p.windowText().color().name(),
+            p.base().color().name())
+
+
+def _apply_mpl_theme(fig, *axes):
+    """Apply theme colors to matplotlib figure and axes."""
+    bg, fg, axes_bg = _mpl_theme()
+    fig.patch.set_facecolor(bg)
+    for ax in axes:
+        ax.set_facecolor(axes_bg)
+        ax.tick_params(colors=fg)
+        ax.xaxis.label.set_color(fg)
+        ax.yaxis.label.set_color(fg)
+        ax.title.set_color(fg)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(fg)
+        leg = ax.get_legend()
+        if leg:
+            leg.get_frame().set_facecolor(axes_bg)
+            for text in leg.get_texts():
+                text.set_color(fg)
 
 
 class InferenceResultsTab(QWidget):
@@ -21,7 +49,28 @@ class InferenceResultsTab(QWidget):
         self.class_labels = []   # set from trained_model_ready signal or manual load
         self.eval_data = None
         self.eval_labels = None
+        
+        self._cm_data = None
+        self._roc_data = None
+        
         self.setup_ui()
+    
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.PaletteChange:
+            bg, _, _ = _mpl_theme()
+            self.cm_figure.patch.set_facecolor(bg)
+            self.roc_figure.patch.set_facecolor(bg)
+            for ax in self.cm_figure.get_axes():
+                _apply_mpl_theme(self.cm_figure, ax)
+            for ax in self.roc_figure.get_axes():
+                _apply_mpl_theme(self.roc_figure, ax)
+            self.cm_canvas.draw_idle()
+            self.roc_canvas.draw_idle()
+            if self._cm_data:
+                self._plot_confusion_matrix(*self._cm_data)
+            if self._roc_data:
+                self._plot_roc_curve(*self._roc_data)
+        super().changeEvent(event)
     
     def setup_ui(self):
         """Initialize the UI components"""
@@ -112,8 +161,10 @@ class InferenceResultsTab(QWidget):
         widget.setObjectName("card")
         layout = QVBoxLayout(widget)
         
-        self.cm_figure = Figure(figsize=(6, 5), dpi=100)
+        bg, _, _ = _mpl_theme()
+        self.cm_figure = Figure(figsize=(6, 5), dpi=100, facecolor=bg)
         self.cm_canvas = FigureCanvas(self.cm_figure)
+        self.cm_canvas.setStyleSheet("background: transparent;")
         layout.addWidget(self.cm_canvas)
         
         eval_btn_layout = QHBoxLayout()
@@ -153,8 +204,10 @@ class InferenceResultsTab(QWidget):
         widget.setObjectName("card")
         layout = QVBoxLayout(widget)
         
-        self.roc_figure = Figure(figsize=(6, 5), dpi=100)
+        bg, _, _ = _mpl_theme()
+        self.roc_figure = Figure(figsize=(6, 5), dpi=100, facecolor=bg)
         self.roc_canvas = FigureCanvas(self.roc_figure)
+        self.roc_canvas.setStyleSheet("background: transparent;")
         layout.addWidget(self.roc_canvas)
         
         eval_btn_layout = QHBoxLayout()
@@ -364,31 +417,36 @@ class InferenceResultsTab(QWidget):
 
             y_pred = predictions.cpu().numpy()
             cm = confusion_matrix(self.eval_labels, y_pred)
-
-            self.cm_figure.clear()
-            ax = self.cm_figure.add_subplot(111)
-            im = ax.imshow(cm, cmap='Blues', interpolation='nearest')
-            ax.set_xlabel('Predicted')
-            ax.set_ylabel('True')
-            ax.set_title('Confusion Matrix')
-
-            if self.class_labels and len(self.class_labels) == cm.shape[0]:
-                ax.set_xticks(range(cm.shape[1]))
-                ax.set_yticks(range(cm.shape[0]))
-                ax.set_xticklabels(self.class_labels, rotation=45, ha='right', fontsize=8)
-                ax.set_yticklabels(self.class_labels, fontsize=8)
-
-            thresh = cm.max() / 2.0
-            for i in range(cm.shape[0]):
-                for j in range(cm.shape[1]):
-                    color = 'white' if cm[i, j] > thresh else 'black'
-                    ax.text(j, i, str(cm[i, j]), ha='center', va='center', color=color)
-
-            self.cm_figure.colorbar(im, ax=ax)
-            self.cm_figure.tight_layout()
-            self.cm_canvas.draw()
+            
+            self._cm_data = (cm, y_pred)
+            self._plot_confusion_matrix(cm, y_pred)
         except Exception as e:
             print(f"[InferenceTab] Error computing confusion matrix: {e}")
+    
+    def _plot_confusion_matrix(self, cm, y_pred):
+        self.cm_figure.clear()
+        ax = self.cm_figure.add_subplot(111)
+        im = ax.imshow(cm, cmap='Blues', interpolation='nearest')
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('True')
+        ax.set_title('Confusion Matrix')
+
+        if self.class_labels and len(self.class_labels) == cm.shape[0]:
+            ax.set_xticks(range(cm.shape[1]))
+            ax.set_yticks(range(cm.shape[0]))
+            ax.set_xticklabels(self.class_labels, rotation=45, ha='right', fontsize=8)
+            ax.set_yticklabels(self.class_labels, fontsize=8)
+
+        thresh = cm.max() / 2.0
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                color = 'white' if cm[i, j] > thresh else 'black'
+                ax.text(j, i, str(cm[i, j]), ha='center', va='center', color=color)
+
+        self.cm_figure.colorbar(im, ax=ax)
+        _apply_mpl_theme(self.cm_figure, ax)
+        self.cm_figure.tight_layout()
+        self.cm_canvas.draw()
     
     def evaluate_report(self):
         """Compute and display classification report"""
@@ -431,17 +489,22 @@ class InferenceResultsTab(QWidget):
             fpr, tpr, _ = roc_curve(self.eval_labels, probs)
             roc_auc = auc(fpr, tpr)
             
-            self.roc_figure.clear()
-            ax = self.roc_figure.add_subplot(111)
-            ax.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
-            ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
-            ax.set_xlim([0.0, 1.0])
-            ax.set_ylim([0.0, 1.05])
-            ax.set_xlabel('False Positive Rate')
-            ax.set_ylabel('True Positive Rate')
-            ax.set_title('ROC Curve')
-            ax.legend(loc="lower right")
-            
-            self.roc_canvas.draw()
+            self._roc_data = (fpr, tpr, roc_auc)
+            self._plot_roc_curve(fpr, tpr, roc_auc)
         except Exception as e:
             print(f"Error computing ROC curve: {e}")
+    
+    def _plot_roc_curve(self, fpr, tpr, roc_auc):
+        self.roc_figure.clear()
+        ax = self.roc_figure.add_subplot(111)
+        ax.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
+        ax.set_xlim([0.0, 1.0])
+        ax.set_ylim([0.0, 1.05])
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title('ROC Curve')
+        ax.legend(loc="lower right")
+        
+        _apply_mpl_theme(self.roc_figure, ax)
+        self.roc_canvas.draw()

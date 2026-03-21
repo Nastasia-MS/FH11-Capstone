@@ -25,7 +25,7 @@ from tabs.ml_training_tab import MLTrainingTab
 from tabs.inference_tab import InferenceResultsTab
 from tabs.evaluate_model_tab import EvaluateModelTab
 from tabs.data_visualization_tab import DataVisualizationTab
-from styles.stylesheet import get_stylesheet, SettingsDialog
+from styles.stylesheet import get_stylesheet, SettingsDialog, apply_theme_palette
 
 from backend.matlab_engine import MatlabEngine
 from backend.dataset_manager import DatasetManager
@@ -290,8 +290,8 @@ class SignalDashboard(QMainWindow):
         self.setWindowTitle("Signal Generation & Classification")
         self.setMinimumSize(1400, 900)
         
-        # Apply stylesheet (reads QSettings, falls back to Light default)
         self.setStyleSheet(get_stylesheet())
+        apply_theme_palette()
         
         # Main widget
         main_widget = QWidget()
@@ -420,15 +420,45 @@ class SignalDashboard(QMainWindow):
         self.content_stack.setCurrentIndex(index)
 
     def apply_theme(self):
-        """Rebuild stylesheet from current QSettings and apply it live."""
         self.setStyleSheet(get_stylesheet())
+        apply_theme_palette()
+        
         s = QSettings("MyCompany", "MixedSignalGUI")
         font_family = s.value("fontFamily", "Segoe UI")
         font_size   = int(s.value("fontSize", 10))
         QApplication.instance().setFont(QFont(font_family, font_size))
+        
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._refresh_all_plots)
+    
+    def _refresh_all_plots(self):
+        tabs_with_plots = [
+            self.waveform_tab,
+            self.channel_tab,
+            self.data_viz_tab,
+            self.evaluate_tab,
+        ]
+        
+        for tab in tabs_with_plots:
+            self._trigger_replots_in_widget(tab)
+    
+    def _trigger_replots_in_widget(self, widget):
+        from widgets.waveform_plots import PlottingWidget
+        from widgets.comparison_widget import ComparisonWidget
+        from PySide6.QtCore import QTimer
+        
+        plot_widgets = []
+        
+        if isinstance(widget, (PlottingWidget, ComparisonWidget)):
+            plot_widgets.append(widget)
+        
+        plot_widgets.extend(widget.findChildren(PlottingWidget))
+        plot_widgets.extend(widget.findChildren(ComparisonWidget))
+        
+        for plot_widget in plot_widgets:
+            QTimer.singleShot(0, plot_widget._replot_with_theme)
 
     def show_settings_dialog(self):
-        """Open the Settings dialog; reapply theme immediately on Apply/OK."""
         dlg = SettingsDialog(parent=self)
         dlg.settingsChanged.connect(self.apply_theme)
         dlg.exec()

@@ -6,12 +6,14 @@ Uses the same DSP routines as the Waveform Generation tab
 and spectrograms are visually consistent.
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QApplication
+from PySide6.QtCore import QEvent
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 import numpy as np
 from scipy import signal
+import matplotlib.pyplot as plt
 
 from widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
 
@@ -29,6 +31,65 @@ _SPECTROGRAM_PRESETS = {
 _DEFAULT_PRESET = {"nperseg": 1024, "overlap": 0.75, "window": "hann", "vmin_pct": 5, "vmax_pct": 95}
 
 
+def _mpl_theme():
+    p = QApplication.palette()
+    return (p.window().color().name(),
+            p.windowText().color().name(),
+            p.base().color().name())
+
+
+def _apply_mpl_theme(fig, *axes):
+    bg, fg, axes_bg = _mpl_theme()
+    fig.patch.set_facecolor(bg)
+    for ax in axes:
+        ax.set_facecolor(axes_bg)
+        ax.tick_params(colors=fg)
+        ax.xaxis.label.set_color(fg)
+        ax.yaxis.label.set_color(fg)
+        ax.title.set_color(fg)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(fg)
+        leg = ax.get_legend()
+        if leg:
+            leg.get_frame().set_facecolor(axes_bg)
+            for text in leg.get_texts():
+                text.set_color(fg)
+    
+    # Handle colorbars
+    for ax in fig.get_axes():
+        if hasattr(ax, '_colorbar'):
+            cbar = ax._colorbar
+            cbar.ax.tick_params(colors=fg)
+            if cbar.ax.yaxis.label:
+                cbar.ax.yaxis.label.set_color(fg)
+            for spine in cbar.ax.spines.values():
+                spine.set_edgecolor(fg)
+
+
+def _theme_toolbar(toolbar):
+    """Style NavigationToolbar2QT to match the current Qt palette."""
+    p = QApplication.palette()
+    bg   = p.window().color().name()
+    fg   = p.windowText().color().name()
+    btn  = p.button().color().name()
+    toolbar.setStyleSheet(f"""
+        QToolBar {{
+            background: {bg};
+            border: none;
+            spacing: 2px;
+        }}
+        QToolButton {{
+            background: {btn};
+            color: {fg};
+            border: 1px solid transparent;
+            border-radius: 3px;
+            padding: 2px;
+        }}
+        QToolButton:hover  {{ border-color: {fg}; }}
+        QToolButton:checked {{ background: {fg}; color: {bg}; }}
+    """)
+
+
 class ComparisonWidget(QWidget):
     """Widget to display clean vs augmented signal comparison with overlays"""
 
@@ -37,15 +98,38 @@ class ComparisonWidget(QWidget):
 
         layout = QVBoxLayout()
 
-        self.figure = Figure(figsize=(14, 10))
+        bg, _, _ = _mpl_theme()
+        self.figure = Figure(figsize=(14, 10), facecolor=bg)
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setStyleSheet("background: transparent;")
         self.toolbar = NavigationToolbar(self.canvas, self)
+        _theme_toolbar(self.toolbar)
 
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
         self.setLayout(layout)
 
+        self._last_plot_args = {}
+
         self.clear_plots()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.PaletteChange:
+            _theme_toolbar(self.toolbar)
+            bg, _, _ = _mpl_theme()
+            self.figure.patch.set_facecolor(bg)
+            for ax in self.figure.get_axes():
+                _apply_mpl_theme(self.figure, ax)
+            self.canvas.draw_idle()
+            self._replot_with_theme()
+        super().changeEvent(event)
+    
+    def _replot_with_theme(self):
+        _theme_toolbar(self.toolbar)
+        bg, _, _ = _mpl_theme()
+        self.figure.patch.set_facecolor(bg)
+        if self._last_plot_args:
+            self.plot_comparison(**self._last_plot_args)
 
     def clear_plots(self):
         """Clear all subplots"""
@@ -59,12 +143,20 @@ class ComparisonWidget(QWidget):
                         fc=None, sps=None, modulation=None,
                         M=None, alpha=0.35, span=8,
                         pulse_shape='rrc', nsymb=None):
-        """
-        Plot comparison between clean and augmented signals.
-
-        Parameters match the metadata saved by the Waveform Generation tab
-        so that the Channel tab can forward them directly.
-        """
+        self._last_plot_args = {
+            'clean_signal': clean_signal,
+            'augmented_signal': augmented_signal,
+            'fs': fs,
+            'fc': fc,
+            'sps': sps,
+            'modulation': modulation,
+            'M': M,
+            'alpha': alpha,
+            'span': span,
+            'pulse_shape': pulse_shape,
+            'nsymb': nsymb
+        }
+        
         self.figure.clear()
 
         any_complex = np.iscomplexobj(clean_signal) or np.iscomplexobj(augmented_signal)
@@ -90,6 +182,7 @@ class ComparisonWidget(QWidget):
                                  M=M, alpha=alpha, span=span,
                                  pulse_shape=pulse_shape, nsymb=nsymb)
 
+        _apply_mpl_theme(self.figure, ax1, ax2, ax3, ax4, ax5)
         self.figure.tight_layout()
         self.canvas.draw()
 
@@ -178,7 +271,11 @@ class ComparisonWidget(QWidget):
         ax.set_title(title)
         ax.set_xlabel('Time (µs)')
         ax.set_ylabel('Frequency (MHz)')
-        self.figure.colorbar(im, ax=ax, label='dB/Hz')
+        _, fg, _ = _mpl_theme()
+        cb = self.figure.colorbar(im, ax=ax, label='dB/Hz')
+        cb.ax.yaxis.set_tick_params(color=fg)
+        cb.ax.yaxis.label.set_color(fg)
+        plt.setp(cb.ax.yaxis.get_ticklabels(), color=fg)
 
     def _plot_constellation(self, ax, clean, augmented, fs,
                             fc, sps, modulation, M, alpha, span,

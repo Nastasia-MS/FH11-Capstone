@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor
 
@@ -14,8 +14,9 @@ class NoiseSpectrumWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # Background
-        painter.fillRect(self.rect(), QColor(255, 255, 255))
+        # Background — use palette so it matches the current theme
+        bg = QApplication.palette().base().color()
+        painter.fillRect(self.rect(), bg)
         
         # Draw bars
         painter.setPen(Qt.NoPen)
