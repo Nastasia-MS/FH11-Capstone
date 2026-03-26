@@ -145,7 +145,7 @@ class ScalarAmplitudeAndPhaseShift(AugmentationBlock):
             return (h * signal).astype(signal.dtype)
         else:
             # Real passband: use analytic signal via Hilbert transform
-            x_a = hilbert(signal)
+            x_a = hilbert(signal, axis=-1)
             y_a = h * x_a
             return np.real(y_a)
 
@@ -173,7 +173,8 @@ class FrequencyShift(AugmentationBlock):
         if self.delta_f == 0.0:
             return signal
 
-        t = np.arange(len(signal)) / fs
+        n_samples = signal.shape[-1]
+        t = np.arange(n_samples) / fs
         shift = np.exp(1j * 2 * np.pi * self.delta_f * t)
 
         if np.iscomplexobj(signal):
@@ -367,6 +368,18 @@ def augment_from_config(cfg: Dict[str, Any]) -> np.ndarray:
     no_tf = None if no is None else tf.constant(no, dtype=tf.float32)
 
     y_tf = time_ch(x_tf, no=no_tf)
+    # y_tf shape: (1, 1, num_rx_ant, num_time_samples)
+
+    multi_channel = cfg.get("multi_channel", False)
+    if multi_channel:
+        # Return all RX antennas: (num_rx_ant, num_time_samples)
+        y_mc = y_tf.numpy()[0, 0, :, :].astype(np.complex64)
+        # Pad/trim each antenna row to output length
+        y_out = np.zeros((y_mc.shape[0], out_n), dtype=np.complex64)
+        for i in range(y_mc.shape[0]):
+            y_out[i] = _pad_or_trim_1d(y_mc[i], out_n, pad_mode="zero", trim_mode="first")
+        return y_out
+
     y = y_tf.numpy().reshape(-1).astype(np.complex64)
 
     # ---- Force output length requested ----
@@ -381,9 +394,10 @@ class SionnaRTAugmentation(AugmentationBlock):
     matching the multiantenna_config.json schema.
     """
 
-    def __init__(self, config: dict, taps: np.ndarray):
+    def __init__(self, config: dict, taps: np.ndarray, multi_channel: bool = False):
         self.config = config
         self.taps = taps
+        self.multi_channel = multi_channel
 
     def apply(self, signal: np.ndarray, fs: float, **kwargs) -> np.ndarray:
         import tensorflow as tf
@@ -432,6 +446,9 @@ class SionnaRTAugmentation(AugmentationBlock):
         )
         # output shape: (1, 1, num_rx_ant, T)
         out_np = output.numpy()
+        if self.multi_channel:
+            # Return all RX antennas: (num_rx_ant, T)
+            return out_np[0, 0, :, :].astype(np.complex64)
         rx_idx = int(self.config.get("rx_antenna_index", 0))
         return out_np[0, 0, rx_idx, :].astype(np.complex64)
 
@@ -446,12 +463,14 @@ class StochasticTDLAugmentation(AugmentationBlock):
     Wraps augment_from_config() using the CLIP_datagen config schema.
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, multi_channel: bool = False):
         self.config = config
+        self.multi_channel = multi_channel
 
     def apply(self, signal: np.ndarray, fs: float, **kwargs) -> np.ndarray:
         cfg = copy.deepcopy(self.config)
         cfg["waveform"]["_preloaded_data"] = signal
+        cfg["multi_channel"] = self.multi_channel
         return augment_from_config(cfg)
 
     def __repr__(self) -> str:

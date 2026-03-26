@@ -1,6 +1,7 @@
 """Pipeline visualization panel: time-domain, PSD, and IQ constellation per stage."""
 
 import numpy as np
+import matplotlib.cm as cm
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
@@ -8,6 +9,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+
+# Colors for multi-antenna overlay (up to 8 antennas)
+_ANT_COLORS = [cm.tab10(i) for i in range(8)]
 
 
 class MiniCanvas(FigureCanvasQTAgg):
@@ -57,19 +61,32 @@ class StagePlotGroup(QWidget):
         ax = self._time_canvas.fig.add_subplot(111)
         ax.set_facecolor("#2a2a2a")
 
-        N = len(signal)
-        t_us = np.arange(N) / fs * 1e6  # microseconds
-
-        if np.iscomplexobj(signal):
-            ax.plot(t_us, signal.real, color="#4fc3f7", linewidth=0.6,
-                    label="I", alpha=0.85)
-            ax.plot(t_us, signal.imag, color="#ff8a65", linewidth=0.6,
-                    label="Q", alpha=0.85)
-            ax.legend(fontsize=6, loc="upper right",
+        # Multi-channel: overlay per-antenna traces
+        if signal.ndim == 2:
+            num_ant = signal.shape[0]
+            N = signal.shape[1]
+            t_us = np.arange(N) / fs * 1e6
+            for i in range(min(num_ant, len(_ANT_COLORS))):
+                c = _ANT_COLORS[i]
+                ax.plot(t_us, np.abs(signal[i]), color=c, linewidth=0.5,
+                        label=f"Ant {i}", alpha=0.7)
+            ax.legend(fontsize=5, loc="upper right",
                       facecolor="#2a2a2a", edgecolor="#555",
-                      labelcolor="white")
+                      labelcolor="white", ncol=2)
         else:
-            ax.plot(t_us, signal.real, color="#4fc3f7", linewidth=0.6)
+            N = len(signal)
+            t_us = np.arange(N) / fs * 1e6
+
+            if np.iscomplexobj(signal):
+                ax.plot(t_us, signal.real, color="#4fc3f7", linewidth=0.6,
+                        label="I", alpha=0.85)
+                ax.plot(t_us, signal.imag, color="#ff8a65", linewidth=0.6,
+                        label="Q", alpha=0.85)
+                ax.legend(fontsize=6, loc="upper right",
+                          facecolor="#2a2a2a", edgecolor="#555",
+                          labelcolor="white")
+            else:
+                ax.plot(t_us, signal.real, color="#4fc3f7", linewidth=0.6)
 
         ax.set_xlabel("Time (us)", color="white", fontsize=7)
         ax.set_ylabel("Amplitude", color="white", fontsize=7)
@@ -83,16 +100,31 @@ class StagePlotGroup(QWidget):
         ax = self._psd_canvas.fig.add_subplot(111)
         ax.set_facecolor("#2a2a2a")
 
-        N = len(signal)
-        if N == 0:
-            self._psd_canvas.fig.tight_layout()
-            return
+        if signal.ndim == 2:
+            num_ant = signal.shape[0]
+            N = signal.shape[1]
+            if N == 0:
+                self._psd_canvas.fig.tight_layout()
+                return
+            freqs_mhz = np.fft.fftshift(np.fft.fftfreq(N, 1.0 / fs)) / 1e6
+            for i in range(min(num_ant, len(_ANT_COLORS))):
+                spectrum = np.fft.fftshift(np.fft.fft(signal[i]))
+                psd = 10 * np.log10(np.abs(spectrum) ** 2 / N + 1e-30)
+                ax.plot(freqs_mhz, psd, color=_ANT_COLORS[i], linewidth=0.5,
+                        label=f"Ant {i}", alpha=0.7)
+            ax.legend(fontsize=5, loc="upper right",
+                      facecolor="#2a2a2a", edgecolor="#555",
+                      labelcolor="white", ncol=2)
+        else:
+            N = len(signal)
+            if N == 0:
+                self._psd_canvas.fig.tight_layout()
+                return
+            spectrum = np.fft.fftshift(np.fft.fft(signal))
+            psd = 10 * np.log10(np.abs(spectrum) ** 2 / N + 1e-30)
+            freqs_mhz = np.fft.fftshift(np.fft.fftfreq(N, 1.0 / fs)) / 1e6
+            ax.plot(freqs_mhz, psd, color="#81c784", linewidth=0.6)
 
-        spectrum = np.fft.fftshift(np.fft.fft(signal))
-        psd = 10 * np.log10(np.abs(spectrum) ** 2 / N + 1e-30)
-        freqs_mhz = np.fft.fftshift(np.fft.fftfreq(N, 1.0 / fs)) / 1e6
-
-        ax.plot(freqs_mhz, psd, color="#81c784", linewidth=0.6)
         ax.set_xlabel("Freq (MHz)", color="white", fontsize=7)
         ax.set_ylabel("PSD (dB)", color="white", fontsize=7)
         ax.set_title("Power Spectral Density", color="white", fontsize=8)
@@ -106,19 +138,33 @@ class StagePlotGroup(QWidget):
         ax.set_facecolor("#2a2a2a")
         ax.set_aspect("equal", adjustable="datalim")
 
-        if not np.iscomplexobj(signal):
-            # Real-only: plot on I axis
-            sig = signal.astype(np.complex128)
-        else:
-            sig = signal
-
-        # Downsample for performance
         MAX_PTS = 2000
-        if len(sig) > MAX_PTS:
-            indices = np.linspace(0, len(sig) - 1, MAX_PTS, dtype=int)
-            sig = sig[indices]
 
-        ax.scatter(sig.real, sig.imag, s=1, color="#ce93d8", alpha=0.6)
+        if signal.ndim == 2:
+            num_ant = signal.shape[0]
+            pts_per_ant = max(1, MAX_PTS // max(num_ant, 1))
+            for i in range(min(num_ant, len(_ANT_COLORS))):
+                sig = signal[i]
+                if not np.iscomplexobj(sig):
+                    sig = sig.astype(np.complex128)
+                if len(sig) > pts_per_ant:
+                    indices = np.linspace(0, len(sig) - 1, pts_per_ant, dtype=int)
+                    sig = sig[indices]
+                ax.scatter(sig.real, sig.imag, s=1, color=_ANT_COLORS[i],
+                           alpha=0.5, label=f"Ant {i}")
+            ax.legend(fontsize=5, loc="upper right",
+                      facecolor="#2a2a2a", edgecolor="#555",
+                      labelcolor="white", ncol=2, markerscale=3)
+        else:
+            if not np.iscomplexobj(signal):
+                sig = signal.astype(np.complex128)
+            else:
+                sig = signal
+            if len(sig) > MAX_PTS:
+                indices = np.linspace(0, len(sig) - 1, MAX_PTS, dtype=int)
+                sig = sig[indices]
+            ax.scatter(sig.real, sig.imag, s=1, color="#ce93d8", alpha=0.6)
+
         ax.set_xlabel("I", color="white", fontsize=7)
         ax.set_ylabel("Q", color="white", fontsize=7)
         ax.set_title("IQ Constellation", color="white", fontsize=8)

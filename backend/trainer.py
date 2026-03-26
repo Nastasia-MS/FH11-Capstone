@@ -123,7 +123,11 @@ class TrainerThread(QThread):
         def load_one(idx, path, label):
             arr = self._load_array(path)
             if arr is not None:
-                return idx, np.asarray(arr).ravel(), label
+                arr = np.asarray(arr)
+                # Multi-channel arrays (num_rx_ant, N) are kept as-is
+                if arr.ndim == 2 and arr.shape[0] <= 64:
+                    return idx, arr, label
+                return idx, arr.ravel(), label
             return None
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
@@ -145,26 +149,52 @@ class TrainerThread(QThread):
             self.finished.emit("")
             return
 
+        # Detect multi-channel arrays (2D with small first dim)
+        is_multi_channel = any(
+            isinstance(a, np.ndarray) and a.ndim == 2 for a in X_list
+        )
+
         # Use fixed target length to match notebook preprocessing (2048)
         # Raw waveform files can be very long (e.g. 98304); passing them
         # untruncated makes convolutions ~24x slower than intended.
         target_len = self.TARGET_LENGTH
         if target_len <= 0:
-            target_len = max([a.size for a in X_list])
+            if is_multi_channel:
+                target_len = max([a.shape[-1] for a in X_list])
+            else:
+                target_len = max([a.size for a in X_list])
         if target_len == 0:
             self.finished.emit("")
             return
 
-        # Pad/truncate to target length
-        X = np.zeros((len(X_list), target_len), dtype=np.float32)
-        for i, a in enumerate(X_list):
-            L = min(len(a), target_len)
-            X[i, :L] = a[:L].astype(np.float32)
+        if is_multi_channel:
+            # Multi-channel: stack as (batch, num_channels, target_len)
+            num_ch = X_list[0].shape[0]
+            X = np.zeros((len(X_list), num_ch, target_len), dtype=np.float32)
+            for i, a in enumerate(X_list):
+                if a.ndim == 1:
+                    # Mixed: treat 1D as single-channel, replicate
+                    L = min(len(a), target_len)
+                    for c in range(num_ch):
+                        X[i, c, :L] = a[:L].astype(np.float32)
+                else:
+                    L = min(a.shape[-1], target_len)
+                    X[i, :, :L] = a[:, :L].astype(np.float32)
+            input_channels = num_ch
+            print(f"Multi-channel mode: {num_ch} channels, {target_len} samples")
+        else:
+            # Pad/truncate to target length
+            X = np.zeros((len(X_list), target_len), dtype=np.float32)
+            for i, a in enumerate(X_list):
+                L = min(len(a), target_len)
+                X[i, :L] = a[:L].astype(np.float32)
 
         y = np.asarray(y_list, dtype=np.int64)
 
-        # Shape data based on model type
-        if self._is_iq_model:
+        # Shape data based on model type (only for non-multi-channel)
+        if is_multi_channel:
+            pass  # already shaped as (batch, num_ch, target_len)
+        elif self._is_iq_model:
             X = self._prepare_iq_data(X)
             X = self._normalize_iq(X)
             input_channels = 2
@@ -205,7 +235,7 @@ class TrainerThread(QThread):
         num_classes = len(self.labels)
         signal_len = X.shape[2]  # length after channel split
         model = get_model(self.model_name, num_classes=num_classes, input_size=signal_len,
-                          **self.model_hparams)
+                          in_channels=input_channels, **self.model_hparams)
         model.to(self.device)
 
         # Loss and optimizer

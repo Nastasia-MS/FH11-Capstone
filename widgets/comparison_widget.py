@@ -6,7 +6,7 @@ Uses the same DSP routines as the Waveform Generation tab
 and spectrograms are visually consistent.
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QApplication
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QApplication
 from PySide6.QtCore import QEvent
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -98,6 +98,19 @@ class ComparisonWidget(QWidget):
 
         layout = QVBoxLayout()
 
+        # Antenna selector (hidden until multi-channel data arrives)
+        self._ant_bar = QHBoxLayout()
+        self._ant_label = QLabel("Antenna:")
+        self._ant_combo = QComboBox()
+        self._ant_combo.setFixedWidth(140)
+        self._ant_combo.currentIndexChanged.connect(self._on_antenna_changed)
+        self._ant_bar.addWidget(self._ant_label)
+        self._ant_bar.addWidget(self._ant_combo)
+        self._ant_bar.addStretch()
+        self._ant_label.setVisible(False)
+        self._ant_combo.setVisible(False)
+        layout.addLayout(self._ant_bar)
+
         bg, _, _ = _mpl_theme()
         self.figure = Figure(figsize=(14, 10), facecolor=bg)
         self.canvas = FigureCanvas(self.figure)
@@ -131,6 +144,11 @@ class ComparisonWidget(QWidget):
         if self._last_plot_args:
             self.plot_comparison(**self._last_plot_args)
 
+    def _on_antenna_changed(self, _idx):
+        """Re-plot with the newly selected antenna."""
+        if self._last_plot_args:
+            self.plot_comparison(**self._last_plot_args)
+
     def clear_plots(self):
         """Clear all subplots"""
         self.figure.clear()
@@ -156,28 +174,56 @@ class ComparisonWidget(QWidget):
             'pulse_shape': pulse_shape,
             'nsymb': nsymb
         }
-        
+
         self.figure.clear()
 
-        any_complex = np.iscomplexobj(clean_signal) or np.iscomplexobj(augmented_signal)
+        # Multi-channel augmented signal: select antenna via combo box
+        is_mc = isinstance(augmented_signal, np.ndarray) and augmented_signal.ndim == 2
+        if is_mc:
+            num_ant = augmented_signal.shape[0]
+            # Populate combo box (block signals to avoid re-entrant replot)
+            self._ant_combo.blockSignals(True)
+            prev_idx = self._ant_combo.currentIndex()
+            self._ant_combo.clear()
+            for i in range(num_ant):
+                self._ant_combo.addItem(f"Antenna {i}")
+            # Restore previous selection if still valid
+            if 0 <= prev_idx < num_ant:
+                self._ant_combo.setCurrentIndex(prev_idx)
+            else:
+                self._ant_combo.setCurrentIndex(0)
+            self._ant_combo.blockSignals(False)
+            self._ant_label.setVisible(True)
+            self._ant_combo.setVisible(True)
+
+            ant_idx = self._ant_combo.currentIndex()
+            aug_for_plot = augmented_signal[ant_idx]
+            mc_label = f" (Ant {ant_idx} of {num_ant})"
+        else:
+            self._ant_label.setVisible(False)
+            self._ant_combo.setVisible(False)
+            aug_for_plot = augmented_signal
+            mc_label = ""
+
+        any_complex = np.iscomplexobj(clean_signal) or np.iscomplexobj(aug_for_plot)
 
         # ---- 1. Time Domain Overlay ----
         ax1 = self.figure.add_subplot(3, 2, 1)
-        self._plot_time_domain(ax1, clean_signal, augmented_signal, fs)
+        self._plot_time_domain(ax1, clean_signal, aug_for_plot, fs)
 
         # ---- 2. Power Spectrum Overlay (Welch PSD) ----
         ax2 = self.figure.add_subplot(3, 2, 2)
-        self._plot_psd(ax2, clean_signal, augmented_signal, fs, any_complex)
+        self._plot_psd(ax2, clean_signal, aug_for_plot, fs, any_complex)
 
         # ---- 3 & 4. Spectrograms ----
         ax3 = self.figure.add_subplot(3, 2, 3)
         ax4 = self.figure.add_subplot(3, 2, 4)
         self._plot_spectrogram(ax3, clean_signal, fs, any_complex, modulation, 'Clean Signal Spectrogram')
-        self._plot_spectrogram(ax4, augmented_signal, fs, any_complex, modulation, 'Augmented Signal Spectrogram')
+        self._plot_spectrogram(ax4, aug_for_plot, fs, any_complex, modulation, f'Augmented Signal Spectrogram{mc_label}')
 
         # ---- 5. Constellation / IQ Trajectory ----
         ax5 = self.figure.add_subplot(3, 2, 5)
-        self._plot_constellation(ax5, clean_signal, augmented_signal, fs,
+        self._plot_constellation(ax5, clean_signal, aug_for_plot, fs,
                                  fc=fc, sps=sps, modulation=modulation,
                                  M=M, alpha=alpha, span=span,
                                  pulse_shape=pulse_shape, nsymb=nsymb)

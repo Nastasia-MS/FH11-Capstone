@@ -319,7 +319,18 @@ class SimpleControlPanel(QWidget):
             lambda _: self.channel_params_changed.emit())
         form.addRow("RX Antenna Idx:", self.rx_antenna_idx_spin)
 
+        self.multi_channel_cb = QCheckBox("Multi-Channel Output")
+        self.multi_channel_cb.setToolTip(
+            "Return all RX antenna outputs instead of selecting a single one"
+        )
+        self.multi_channel_cb.toggled.connect(self._on_multi_channel_toggled)
+        form.addRow(self.multi_channel_cb)
+
         parent_layout.addWidget(group)
+
+    def _on_multi_channel_toggled(self, checked: bool):
+        self.rx_antenna_idx_spin.setEnabled(not checked)
+        self.channel_params_changed.emit()
 
     def _update_rx_antenna_index_max(self):
         max_idx = self.rx_ant_rows.value() * self.rx_ant_cols.value() - 1
@@ -400,6 +411,7 @@ class SimpleControlPanel(QWidget):
             "noise_power_dbm": self.noise_power_spin.value(),
             "waveform_length": self.waveform_length_spin.value(),
             "rx_antenna_index": self.rx_antenna_idx_spin.value(),
+            "multi_channel": self.multi_channel_cb.isChecked(),
         }
 
     # -- toggle logic ------------------------------------------------------

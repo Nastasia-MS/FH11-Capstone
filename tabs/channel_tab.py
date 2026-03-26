@@ -421,6 +421,60 @@ class ChannelNoiseTab(QWidget):
 
         layout.addLayout(info_grid)
 
+        # --- Multi-Channel Output ---
+        sep_mc = QFrame()
+        sep_mc.setFrameShape(QFrame.HLine)
+        sep_mc.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep_mc)
+
+        mc_title = QLabel("Multi-Channel Array Output")
+        mc_title.setProperty("class", "section-title")
+        layout.addWidget(mc_title)
+
+        self.stoch_multi_channel_cb = QCheckBox("Enable Multi-Channel Output")
+        self.stoch_multi_channel_cb.setToolTip(
+            "Return all RX antenna outputs instead of selecting a single one"
+        )
+        self.stoch_multi_channel_cb.toggled.connect(self._on_stoch_multi_channel_toggled)
+        layout.addWidget(self.stoch_multi_channel_cb)
+
+        stoch_mc_grid = QGridLayout()
+        stoch_mc_grid.setHorizontalSpacing(12)
+        stoch_mc_grid.setVerticalSpacing(8)
+        stoch_mc_grid.setColumnStretch(1, 1)
+
+        stoch_mc_grid.addWidget(QLabel("Num TX Antennas"), 0, 0)
+        self.stoch_num_tx_ant_spin = QSpinBox()
+        self.stoch_num_tx_ant_spin.setRange(1, 64)
+        self.stoch_num_tx_ant_spin.setValue(1)
+        self.stoch_num_tx_ant_spin.setEnabled(False)
+        stoch_mc_grid.addWidget(self.stoch_num_tx_ant_spin, 0, 1)
+
+        stoch_mc_grid.addWidget(QLabel("Num RX Antennas"), 1, 0)
+        self.stoch_num_rx_ant_spin = QSpinBox()
+        self.stoch_num_rx_ant_spin.setRange(1, 64)
+        self.stoch_num_rx_ant_spin.setValue(1)
+        self.stoch_num_rx_ant_spin.setEnabled(False)
+        stoch_mc_grid.addWidget(self.stoch_num_rx_ant_spin, 1, 1)
+
+        layout.addLayout(stoch_mc_grid)
+
+        save_mode_row = QHBoxLayout()
+        save_mode_row.addWidget(QLabel("Save Mode"))
+        self.stoch_save_mode_combo = QComboBox()
+        self.stoch_save_mode_combo.addItems([
+            "Single Antenna",
+            "All Antennas (Separate Files)",
+            "All Antennas (Stacked)",
+        ])
+        self.stoch_save_mode_combo.setEnabled(False)
+        save_mode_row.addWidget(self.stoch_save_mode_combo)
+        layout.addLayout(save_mode_row)
+
+        self.stoch_output_shape_label = QLabel("")
+        self.stoch_output_shape_label.setProperty("class", "section-subtitle")
+        layout.addWidget(self.stoch_output_shape_label)
+
         return page
 
     # ---- Ray Tracing page (full controls) ----
@@ -722,6 +776,39 @@ class ChannelNoiseTab(QWidget):
 
         layout.addLayout(ch_grid)
 
+        # --- Multi-Channel Output ---
+        sep_mc = QFrame()
+        sep_mc.setFrameShape(QFrame.HLine)
+        sep_mc.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep_mc)
+
+        mc_title = QLabel("Multi-Channel Array Output")
+        mc_title.setProperty("class", "section-title")
+        layout.addWidget(mc_title)
+
+        self.rt_multi_channel_cb = QCheckBox("Enable Multi-Channel Output")
+        self.rt_multi_channel_cb.setToolTip(
+            "Return all RX antenna outputs instead of selecting a single one"
+        )
+        self.rt_multi_channel_cb.toggled.connect(self._on_rt_multi_channel_toggled)
+        layout.addWidget(self.rt_multi_channel_cb)
+
+        save_mode_row = QHBoxLayout()
+        save_mode_row.addWidget(QLabel("Save Mode"))
+        self.rt_save_mode_combo = QComboBox()
+        self.rt_save_mode_combo.addItems([
+            "Single Antenna",
+            "All Antennas (Separate Files)",
+            "All Antennas (Stacked)",
+        ])
+        self.rt_save_mode_combo.setEnabled(False)
+        save_mode_row.addWidget(self.rt_save_mode_combo)
+        layout.addLayout(save_mode_row)
+
+        self.rt_output_shape_label = QLabel("")
+        self.rt_output_shape_label.setProperty("class", "section-subtitle")
+        layout.addWidget(self.rt_output_shape_label)
+
         return page
 
     # ---- RT control push methods ----
@@ -791,6 +878,21 @@ class ChannelNoiseTab(QWidget):
         self.rt_place_rx_btn.setChecked(False)
         self.rt_place_tx_btn.blockSignals(False)
         self.rt_place_rx_btn.blockSignals(False)
+
+    def _on_rt_multi_channel_toggled(self, checked):
+        self.rt_rx_antenna_idx_spin.setEnabled(not checked)
+        self.rt_save_mode_combo.setEnabled(checked)
+        if not checked:
+            self.rt_save_mode_combo.setCurrentIndex(0)
+            self.rt_output_shape_label.setText("")
+
+    def _on_stoch_multi_channel_toggled(self, checked):
+        self.stoch_num_tx_ant_spin.setEnabled(checked)
+        self.stoch_num_rx_ant_spin.setEnabled(checked)
+        self.stoch_save_mode_combo.setEnabled(checked)
+        if not checked:
+            self.stoch_save_mode_combo.setCurrentIndex(0)
+            self.stoch_output_shape_label.setText("")
 
     def _rt_push_antennas(self, _=None):
         if self.sionna_widget is None:
@@ -1288,9 +1390,18 @@ class ChannelNoiseTab(QWidget):
         if self.active_subtab == 1:
             # Stochastic TDL path
             try:
+                multi_ch = self.stoch_multi_channel_cb.isChecked()
                 config = self._build_stochastic_config()
-                block = StochasticTDLAugmentation(config)
+                if multi_ch:
+                    config["channel"]["num_tx_ant"] = self.stoch_num_tx_ant_spin.value()
+                    config["channel"]["num_rx_ant"] = self.stoch_num_rx_ant_spin.value()
+                block = StochasticTDLAugmentation(config, multi_channel=multi_ch)
                 augmented_signal = block.apply(signal, fs)
+                if multi_ch and augmented_signal.ndim == 2:
+                    self.stoch_output_shape_label.setText(
+                        f"Output: {augmented_signal.shape[0]} antennas x {augmented_signal.shape[1]} samples")
+                else:
+                    self.stoch_output_shape_label.setText("")
             except ImportError as e:
                 QMessageBox.warning(
                     self, "Missing Dependencies",
@@ -1312,9 +1423,15 @@ class ChannelNoiseTab(QWidget):
                 )
                 return
             try:
+                multi_ch = self.rt_multi_channel_cb.isChecked()
                 config = self._build_rt_config()
-                block = SionnaRTAugmentation(config, self.rt_last_taps)
+                block = SionnaRTAugmentation(config, self.rt_last_taps, multi_channel=multi_ch)
                 augmented_signal = block.apply(signal, fs)
+                if multi_ch and augmented_signal.ndim == 2:
+                    self.rt_output_shape_label.setText(
+                        f"Output: {augmented_signal.shape[0]} antennas x {augmented_signal.shape[1]} samples")
+                else:
+                    self.rt_output_shape_label.setText("")
             except ImportError as e:
                 QMessageBox.warning(
                     self, "Missing Dependencies",
@@ -1422,7 +1539,36 @@ class ChannelNoiseTab(QWidget):
                                'freq_shift_hz': self.freq_shift_hz},
             }
 
-        saved = self.dataset_manager.save(aug_name, self.last_augmented_signal, metadata)
-        self._active_entry = saved
-        self.refresh_dataset_list()
-        print(f"[ChannelTab] Saved augmented dataset: {aug_name}")
+        # Determine save mode for multi-channel signals
+        signal = self.last_augmented_signal
+        save_mode = "Single Antenna"
+        if self.active_subtab == 1 and self.stoch_multi_channel_cb.isChecked():
+            save_mode = self.stoch_save_mode_combo.currentText()
+        elif self.active_subtab == 2 and self.rt_multi_channel_cb.isChecked():
+            save_mode = self.rt_save_mode_combo.currentText()
+
+        if save_mode == "All Antennas (Separate Files)" and signal.ndim == 2:
+            num_ant = signal.shape[0]
+            metadata['num_channels'] = num_ant
+            for i in range(num_ant):
+                ant_name = self.dataset_manager._unique_name(f"{base_name}_augmented_ant{i}")
+                meta_i = dict(metadata)
+                meta_i['antenna_index'] = i
+                meta_i['channel_group'] = aug_name
+                saved = self.dataset_manager.save(ant_name, signal[i], meta_i)
+            self._active_entry = saved
+            self.refresh_dataset_list()
+            print(f"[ChannelTab] Saved {num_ant} per-antenna datasets: {aug_name}_ant*")
+        elif save_mode == "All Antennas (Stacked)" and signal.ndim == 2:
+            metadata['num_channels'] = signal.shape[0]
+            metadata['signal_shape'] = list(signal.shape)
+            saved = self.dataset_manager.save(aug_name, signal, metadata)
+            self._active_entry = saved
+            self.refresh_dataset_list()
+            print(f"[ChannelTab] Saved stacked multi-channel dataset: {aug_name} {signal.shape}")
+        else:
+            # Single antenna or 1D signal — original behavior
+            saved = self.dataset_manager.save(aug_name, signal, metadata)
+            self._active_entry = saved
+            self.refresh_dataset_list()
+            print(f"[ChannelTab] Saved augmented dataset: {aug_name}")

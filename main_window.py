@@ -1,5 +1,16 @@
 import sys
 import os
+
+# Pre-initialize Dr.Jit/Mitsuba BEFORE PySide6 to avoid LLVM symbol conflicts
+# on Apple Silicon. PySide6's Qt libraries load LLVM components that interfere
+# with Dr.Jit's JIT compiler if Qt is initialized first.
+try:
+    import drjit  # noqa: F401
+    import mitsuba
+    mitsuba.set_variant('llvm_ad_mono_polarized')
+except ImportError:
+    pass  # Sionna/Mitsuba not installed — RT features will be unavailable
+
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,

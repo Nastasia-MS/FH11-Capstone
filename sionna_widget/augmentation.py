@@ -109,6 +109,7 @@ class SionnaChannelAugmentation:
         noise_power_dbm: float,
         num_tx_ant: int,
         rx_antenna_index: int = 0,
+        multi_channel: bool = False,
     ) -> np.ndarray:
         """Apply deterministic RT channel using Sionna's ApplyTimeChannel.
 
@@ -121,9 +122,10 @@ class SionnaChannelAugmentation:
             noise_power_dbm: Noise power in dBm.
             num_tx_ant: Number of TX antenna elements.
             rx_antenna_index: Which RX antenna element to select from output.
+            multi_channel: If True, return all RX antennas as (num_rx_ant, T).
 
         Returns:
-            Complex64 array of shape (waveform_length,).
+            Complex64 array of shape (waveform_length,) or (num_rx_ant, waveform_length).
         """
         import tensorflow as tf
         from sionna.phy.channel import ApplyTimeChannel
@@ -163,6 +165,8 @@ class SionnaChannelAugmentation:
         )
         # output shape: (1, 1, num_rx_ant, T)
         out_np = output.numpy()
+        if multi_channel:
+            return out_np[0, 0, :, :].astype(np.complex64)
         return out_np[0, 0, rx_antenna_index, :].astype(np.complex64)
 
     # -- internals ---------------------------------------------------------

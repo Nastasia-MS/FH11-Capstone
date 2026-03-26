@@ -110,7 +110,7 @@ class DatasetManager:
         """
         meta = dict(metadata)
         meta["name"] = name
-        meta.setdefault("samples", int(len(signal)))
+        meta.setdefault("samples", int(signal.shape[-1]) if hasattr(signal, 'shape') else int(len(signal)))
         meta.setdefault("timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
 
         if not _validate(meta):
@@ -169,7 +169,7 @@ class DatasetManager:
         meta = dict(metadata)
         meta.setdefault("source", "imported")
         meta.setdefault("fs", 8e6)     # caller should always supply this
-        meta["samples"] = int(len(signal))
+        meta["samples"] = int(signal.shape[-1]) if hasattr(signal, 'shape') else int(len(signal))
 
         return self.save(name, signal, meta)
 
