@@ -1,6 +1,0 @@
-numpy
-tensorflow
-sionna
-PySide6
-PyOpenGL
-matplotlib
