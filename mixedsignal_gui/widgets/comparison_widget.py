@@ -15,7 +15,7 @@ import numpy as np
 from scipy import signal
 import matplotlib.pyplot as plt
 
-from widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
+from mixedsignal_gui.widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
 
 
 # Modulation-aware spectrogram presets

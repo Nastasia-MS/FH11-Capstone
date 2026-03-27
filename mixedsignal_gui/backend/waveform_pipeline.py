@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import signal
 
-from mixedsignal-gui.backend.core import Waveform
+from mixedsignal_gui.backend.core import Waveform
 
 
 class WaveformPipeline:

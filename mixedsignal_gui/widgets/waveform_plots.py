@@ -6,7 +6,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 import numpy as np
 from scipy import signal
 
-from widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
+from mixedsignal_gui.widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
 
 def _mpl_theme():
     """Return (bg, fg, axes_bg) from the current Qt application palette."""

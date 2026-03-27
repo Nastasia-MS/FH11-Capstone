@@ -6,10 +6,10 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileD
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QPalette, QColor
 
-from widgets.toggle_switch import ToggleSwitch
-from widgets.noise_spectrum import NoiseSpectrumWidget
-from widgets.waveform_plots import PlottingWidget
-from backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
+from mixedsignal_gui.widgets.toggle_switch import ToggleSwitch
+from mixedsignal_gui.widgets.noise_spectrum import NoiseSpectrumWidget
+from mixedsignal_gui.widgets.waveform_plots import PlottingWidget
+from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift,
                                   StochasticTDLAugmentation, SionnaRTAugmentation)
 import numpy as np
@@ -975,7 +975,7 @@ class ChannelNoiseTab(QWidget):
         rt_comp_title.setProperty("class", "card-title")
         rt_comp_layout.addWidget(rt_comp_title)
 
-        from widgets.comparison_widget import ComparisonWidget
+        from mixedsignal_gui.widgets.comparison_widget import ComparisonWidget
         self.rt_comparison_plot = ComparisonWidget()
         rt_comp_layout.addWidget(self.rt_comparison_plot)
         self.rt_view_stack.addWidget(rt_comparison_frame)
@@ -997,7 +997,7 @@ class ChannelNoiseTab(QWidget):
         comparison_title.setProperty("class", "card-title")
         comparison_layout.addWidget(comparison_title)
 
-        from widgets.comparison_widget import ComparisonWidget
+        from mixedsignal_gui.widgets.comparison_widget import ComparisonWidget
         self.comparison_plot = ComparisonWidget()
         comparison_layout.addWidget(self.comparison_plot)
 
@@ -1010,7 +1010,7 @@ class ChannelNoiseTab(QWidget):
         if self.sionna_widget is not None:
             return True
         try:
-            from sionna_widget import SionnaWidget
+            from mixedsignal_gui.sionna_widget import SionnaWidget
             self.sionna_widget = SionnaWidget(viewport_only=True)
             self.rt_viewport_page_layout.addWidget(self.sionna_widget)
 

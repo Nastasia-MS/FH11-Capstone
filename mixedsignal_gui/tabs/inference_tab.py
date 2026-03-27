@@ -319,7 +319,7 @@ class InferenceResultsTab(QWidget):
     def _do_load_model(self, filepath: str, num_classes: int = 2):
         """Internal: load model weights and update UI."""
         try:
-            from backend.torch_models import get_model
+            from mixedsignal_gui.backend.torch_models import get_model
             
             # Get current device setting
             device = self.get_device()

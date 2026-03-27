@@ -10,7 +10,7 @@ import torch
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
-from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
+from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 
 # Must stay in sync with trainer.py
 IQ_MODELS = {'ResNet1DOptimized'}
@@ -311,7 +311,7 @@ class EvaluateModelTab(QWidget):
 
     def _do_load_model(self, filepath):
         try:
-            from backend.torch_models import get_model
+            from mixedsignal_gui.backend.torch_models import get_model
 
             meta = self._load_metadata(filepath)
             self.model_metadata = meta
@@ -398,7 +398,7 @@ class EvaluateModelTab(QWidget):
 
         # --- Generate waveform via WaveformPipeline ---
         try:
-            from backend.waveform_pipeline import WaveformPipeline
+            from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
             pipeline = WaveformPipeline(self.eng)
             result = pipeline.generate(
                 fs=fs, Tsymb=tsymb, Nsymb=nsymb, fc=fc, M=m,
@@ -453,7 +453,7 @@ class EvaluateModelTab(QWidget):
 
     def _classify_signal(self, data):
         """Preprocess one signal and run inference."""
-        from backend.trainer import TrainerThread
+        from mixedsignal_gui.backend.trainer import TrainerThread
         target_len = TrainerThread.TARGET_LENGTH
 
         raw = np.asarray(data, dtype=np.float32).ravel()

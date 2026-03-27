@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QSlider, QTabWidget, QDoubleSpinBox, QSpinBox)
 from PySide6.QtCore import Qt
 
-from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
+from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 import numpy as np
 from datetime import datetime
 
@@ -294,7 +294,7 @@ class WaveformSelectionTab(QWidget):
         if abs(sps - round(sps)) > 1e-9:
             raise ValueError(f"Invalid parameters: fs * Tsymb = {sps:.6f} must be an integer (samples per symbol)")
 
-        from backend.waveform_pipeline import WaveformPipeline
+        from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)
 
         result = pipeline.generate(
@@ -361,7 +361,7 @@ class WaveformSelectionTab(QWidget):
             "FHSS": [4, 8, 16],
         }
 
-        from backend.waveform_pipeline import WaveformPipeline
+        from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)
 
         total = num_samples * len(modulations)

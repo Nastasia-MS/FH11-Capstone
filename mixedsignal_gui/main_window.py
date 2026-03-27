@@ -17,19 +17,19 @@ from PySide6.QtWidgets import (
     QComboBox,
 )
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
+from importlib.resources import files
 
-from tabs.waveform_tab import WaveformSelectionTab
-from tabs.channel_tab import ChannelNoiseTab
-from tabs.ml_training_tab import MLTrainingTab
-from tabs.inference_tab import InferenceResultsTab
-from tabs.evaluate_model_tab import EvaluateModelTab
-from tabs.data_visualization_tab import DataVisualizationTab
-from styles.stylesheet import get_stylesheet, SettingsDialog, apply_theme_palette
+from mixedsignal_gui.tabs.waveform_tab import WaveformSelectionTab
+from mixedsignal_gui.tabs.channel_tab import ChannelNoiseTab
+from mixedsignal_gui.tabs.ml_training_tab import MLTrainingTab
+from mixedsignal_gui.tabs.inference_tab import InferenceResultsTab
+from mixedsignal_gui.tabs.evaluate_model_tab import EvaluateModelTab
+from mixedsignal_gui.tabs.data_visualization_tab import DataVisualizationTab
+from mixedsignal_gui.styles.stylesheet import get_stylesheet, SettingsDialog, apply_theme_palette
 
-from backend.matlab_engine import MatlabEngine
-from backend.dataset_manager import DatasetManager
-
+from mixedsignal_gui.backend.matlab_engine import MatlabEngine
+from mixedsignal_gui.backend.dataset_manager import DatasetManager
 
 
 # ----- setup wizard ------------------------------------------------------
@@ -498,8 +498,8 @@ class SignalDashboard(QMainWindow):
             self._trigger_replots_in_widget(tab)
     
     def _trigger_replots_in_widget(self, widget):
-        from widgets.waveform_plots import PlottingWidget
-        from widgets.comparison_widget import ComparisonWidget
+        from mixedsignal_gui.widgets.waveform_plots import PlottingWidget
+        from mixedsignal_gui.widgets.comparison_widget import ComparisonWidget
         from PySide6.QtCore import QTimer
         
         plot_widgets = []
@@ -599,6 +599,8 @@ class SignalDashboard(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    icon_path = files("mixedsignal_gui.resources").joinpath("icon.png")
+    app.setWindowIcon(QIcon(str(icon_path)))
     
     # Allow --reset-wizard flag to force wizard on next launch
     if "--reset-wizard" in sys.argv:

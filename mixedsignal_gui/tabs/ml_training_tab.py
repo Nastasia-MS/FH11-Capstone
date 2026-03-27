@@ -7,7 +7,7 @@ import os
 import numpy as np
 import torch
 
-from widgets.training_chart import TrainingChartWidget
+from mixedsignal_gui.widgets.training_chart import TrainingChartWidget
 
 
 class MLTrainingTab(QWidget):
@@ -620,7 +620,7 @@ class MLTrainingTab(QWidget):
         """Handle training start button click"""
         # Lazy import to avoid breaking app if torch not installed
         try:
-            from backend.trainer import TrainerThread
+            from mixedsignal_gui.backend.trainer import TrainerThread
         except ImportError as e:
             self.status_label.setText(f"PyTorch not installed: {e}")
             print(f"ERROR: Could not import TrainerThread: {e}")

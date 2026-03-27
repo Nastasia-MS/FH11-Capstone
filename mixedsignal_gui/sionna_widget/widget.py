@@ -20,11 +20,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 
-from .engine import SimpleSimulationEngine
-from .augmentation import SionnaChannelAugmentation, ChannelParameters
-from .controls import SimpleControlPanel
-from .viewport import SimpleViewport
-from .visualization import PipelineVisualizationPanel
+from mixedsignal_gui.sionna_widget.engine import SimpleSimulationEngine
+from mixedsignal_gui.sionna_widget.augmentation import SionnaChannelAugmentation, ChannelParameters
+from mixedsignal_gui.sionna_widget.controls import SimpleControlPanel
+from mixedsignal_gui.sionna_widget.viewport import SimpleViewport
+from mixedsignal_gui.sionna_widget.visualization import PipelineVisualizationPanel
 
 from typing import Optional, Dict, Any
 

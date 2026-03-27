@@ -17,7 +17,7 @@ import numpy as np
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from PySide6.QtCore import Slot
 
-from sionna_widget import SionnaWidget, SionnaChannelAugmentation, ChannelParameters
+from mixedsignal_gui.sionna_widget import SionnaWidget, SionnaChannelAugmentation, ChannelParameters
 
 
 class DemoWindow(QMainWindow):

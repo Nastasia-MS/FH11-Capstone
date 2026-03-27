@@ -113,7 +113,7 @@ class Waveform:
     def _ensure_generator(self):
         if self._generator is not None:
             return
-        from backend.generators import MATLABWaveformGenerator
+        from mixedsignal_gui.backend.generators import MATLABWaveformGenerator
 
         self._generator = MATLABWaveformGenerator(self.matlab_engine)
 
