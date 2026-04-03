@@ -1,0 +1,13 @@
+# Include Python modules
+recursive-include mixedsignal_gui *.py
+
+# Include resources (icons, images, etc.)
+recursive-include mixedsignal_gui/resources *
+
+# Include MATLAB waveform files
+recursive-include mixedsignal_gui/waveform_functions *.m
+recursive-include mixedsignal_gui/waveform_functions *.mat
+
+# Include README and LICENSE
+include README.md
+include LICENSE

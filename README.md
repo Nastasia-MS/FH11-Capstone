@@ -2,127 +2,233 @@
 
 **Signal Generation & Classification Dashboard**
 
-This repository contains a PySide6-based graphical application for generating digital communication waveforms, applying channel models and noise, training machine learning models and performing inference. The core functionality is split between a user interface (`main_window.py` and various tabs) and a backend that handles waveform generation (via the MATLAB engine or Python implementations), dataset management, model training (TensorFlow & PyTorch), and inference.
+A PySide6-based graphical application for generating digital communication waveforms, applying channel models and noise, training machine learning models, and performing inference.
+
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
 ## Features
 
-- **Waveform Selection** – Choose modulation types (FSK, PAM, FHSS, etc.) and parameters. The generation routines can call MATLAB functions when the MATLAB Engine API is available.
+- **Waveform Selection** – Choose modulation types (FSK, PAM, FHSS, etc.) and parameters. Generation routines can call MATLAB functions when the MATLAB Engine API is available.
 - **Channel & Noise** – Apply channel models and additive noise to generated signals.
 - **ML Training** – Train classification models using TensorFlow or PyTorch on synthetic waveform datasets.
-- **Inference Results** – Visualize predictions, confusion matrices and performance metrics.
+- **Inference Results** – Visualize predictions, confusion matrices, and performance metrics.
 - **Dataset Management** – Save/load examples in `.npy`/`.json` pairs using a shared `DatasetManager`.
-
----
-
-## Project Structure
-```
-main_window.py             # entry point for the PySide6 application
-requirements.txt           # Python dependencies
-backend/                   # signal logic, dataset & model utilities
-    ├── augmentation.py
-    ├── core.py
-    ├── dataset_generator.py
-    ├── dataset_manager.py
-    ├── generators.py
-    ├── matlab_engine.py    # wrapper for MATLAB Engine API
-    ├── tf_models.py
-    ├── torch_models.py
-    ├── trainer.py
-    ├── waveform_pipeline.py
-    ├── waveform_service.py
-sionna_widget/             # (likely custom widgets for the Sionna library)
-styles/                    # stylesheet definitions
-tabs/                      # UI tabs for each major workflow step
-waveform_functions/        # MATLAB scripts used by the engine (added to path at runtime)
-datasets/                  # generated examples and metadata
-models/                    # trained model snapshots (`.pth`, etc.)
-```
 
 ---
 
 ## Installation
 
-1. **Prerequisites**
-   - Python 3.10+ (tested with 3.11)
-   - [MATLAB](https://www.mathworks.com/products/matlab.html) (optional, for waveform generation)
-   - MATLAB Engine for Python ([installation guide](https://www.mathworks.com/help/matlab/matlab_external/install-the-matlab-engine-for-python.html))
+### Quick Install
 
-2. **Clone the repository**
+```bash
+pip install mixedsignal-gui
+```
+
+### Prerequisites
+
+- **Python 3.10 or higher** (tested with 3.11)
+- **(Optional) MATLAB** – For advanced waveform generation features
+  - [MATLAB](https://www.mathworks.com/products/matlab.html) R2021a or later
+  - [MATLAB Engine for Python](https://www.mathworks.com/help/matlab/matlab_external/install-the-matlab-engine-for-python.html)
+
+### Installing MATLAB Engine (Optional)
+
+If you want to use MATLAB-based waveform generation:
+
+1. **Find your MATLAB installation:**
    ```bash
-   git clone <repo-url> mixedsignal-gui
-   cd mixedsignal-gui
+   matlab -batch "disp(matlabroot)"
    ```
 
-3. **Create and activate a virtual environment**
+2. **Install the MATLAB Engine for Python:**
    ```bash
-   python -m venv venv
-   source venv/bin/activate   # macOS / Linux
-   # or venv\Scripts\activate on Windows
-   ```
-
-4. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-5. **(Optional) Install the MATLAB engine**
-   ```bash
-   cd /path/to/matlab/extern/engines/python
+   # macOS/Linux
+   cd /Applications/MATLAB_R2023b.app/extern/engines/python
+   python setup.py install
+   
+   # Windows
+   cd "C:\Program Files\MATLAB\R2023b\extern\engines\python"
    python setup.py install
    ```
 
+   Replace `R2023b` with your MATLAB version.
+
+### Install from Source (for developers)
+
+```bash
+git clone https://github.com/Nastasia-MS/FH11-Capstone.git
+cd FH11-Capstone
+pip install -e .
+```
+
+For development dependencies:
+```bash
+pip install -e ".[dev]"
+```
 
 ---
 
-## Running the Application
+## Usage
 
-1. Activate the environment:
-   ```bash
-   source venv/bin/activate
-   ```
-2. Launch the GUI:
-   ```bash
-   python main_window.py
-   ```
+After installation, launch the GUI from the command line:
 
-On the very first launch the application will display a multi‑page setup wizard
-(with the rest of the GUI visible behind it).  The wizard:
+```bash
+mixedsignal-gui
+```
 
-* gives a **quick tour** of the four main tabs (waveform, channel, ML, inference)
-  with explanatory text and arrows to advance;
-* lets the user pick folders for models and datasets and shows the detected GPU
-  count, offering CPU/GPU mode selection;
-* ends with a short tips & tricks page describing navigation and how to reopen
-  the wizard later from the Help menu.
+Or from Python:
 
-Your answers are stored in Qt settings and the wizard is suppressed on subsequent
-starts; delete the settings or use the menu item to see it again.
+```python
+from mixedsignal_gui.main_window import main
+main()
+```
 
-If MATLAB is available and the engine is installed, the app will attempt to start it and add `waveform_functions` to the MATLAB path, allowing you to call custom MATLAB waveform generators. If not, waveform generation will be disabled and the GUI will still launch, but certain buttons will be inactive.
+### First Launch
+
+On the first launch, the application displays a multi-page setup wizard that:
+
+* Provides a **quick tour** of the four main tabs (waveform, channel, ML, inference)
+* Lets you select folders for models and datasets
+* Detects available GPUs and allows CPU/GPU mode selection
+* Shows tips & tricks for navigation
+
+Your settings are saved and the wizard won't appear again unless you reset settings or access it from the Help menu.
+
+### MATLAB Integration
+
+If MATLAB and the MATLAB Engine are installed, the app will automatically:
+- Start the MATLAB engine
+- Add `waveform_functions` to the MATLAB path
+- Enable MATLAB-based waveform generators
+
+If MATLAB is not available, the GUI will still launch with Python-based waveform generation, but some features will be disabled.
 
 ---
 
-## Development Notes
+## Project Structure
 
-- Stylesheet customization is located in `styles/stylesheet.py`.
-- New waveform-generation routines can be added under `backend/generators.py` or as MATLAB scripts.
-- The dataset manager stores `.npy` and `.json` pairs in `datasets/` by default; you can change this behaviour in `backend/dataset_manager.py`.
-- To add new tabs or widgets, look in the `tabs/` directory and follow the existing patterns.
+```
+mixedsignal_gui/
+├── main_window.py              # Entry point for the PySide6 application
+├── backend/                    # Signal logic, dataset & model utilities
+│   ├── augmentation.py
+│   ├── core.py
+│   ├── dataset_generator.py
+│   ├── dataset_manager.py
+│   ├── generators.py
+│   ├── matlab_engine.py        # Wrapper for MATLAB Engine API
+│   ├── tf_models.py
+│   ├── torch_models.py
+│   ├── trainer.py
+│   ├── waveform_pipeline.py
+│   └── waveform_service.py
+├── sionna_widget/              # Custom widgets for Sionna library
+├── styles/                     # Stylesheet definitions
+├── tabs/                       # UI tabs for each workflow step
+├── waveform_functions/         # MATLAB scripts (added to path at runtime)
+├── resources/                  # UI resources and assets
+├── datasets/                   # Generated examples and metadata
+└── models/                     # Trained model snapshots
+```
+
+---
+
+## Development
+
+### Adding New Features
+
+- **Stylesheets**: Customize in `styles/stylesheet.py`
+- **Waveform generators**: Add to `backend/generators.py` or as MATLAB scripts in `waveform_functions/`
+- **Dataset management**: Configure in `backend/dataset_manager.py`
+- **New UI tabs**: Follow patterns in `tabs/` directory
+
+### Running Tests
+
+```bash
+pytest
+```
+
+### Code Formatting
+
+```bash
+black mixedsignal_gui/
+isort mixedsignal_gui/
+```
+
+---
+
+## Dependencies
+
+Core dependencies:
+- PySide6 – Qt-based GUI framework
+- PyTorch – Deep learning framework
+- TensorFlow – Machine learning platform
+- Sionna – Link-level simulator
+- NumPy – Numerical computing
+- Matplotlib – Plotting library
+- scikit-learn – Machine learning utilities
+- PyOpenGL – OpenGL bindings
+
+See `pyproject.toml` for the complete list.
+
+---
+
+## Troubleshooting
+
+### MATLAB Engine Issues
+
+**Error: "MATLAB engine is not available"**
+- Ensure MATLAB is installed and the engine is installed in your Python environment
+- Verify installation: `python -c "import matlab.engine; print('Success')"`
+- Reinstall the engine if needed (see Installation section above)
+
+### GPU Not Detected
+
+- For PyTorch: Check with `python -c "import torch; print(torch.cuda.is_available())"`
+- For TensorFlow: Check with `python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"`
+- Ensure appropriate CUDA drivers are installed
+
+### Import Errors
+
+If you get "No module named X" errors, the package may be missing from dependencies. Please report these as issues.
 
 ---
 
 ## License
 
-TODO
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
 ## Acknowledgements
 
 This project makes use of:
-- [PySide6](https://doc.qt.io/qtforpython/)
-- [PyTorch](https://pytorch.org/)
-- [TensorFlow](https://www.tensorflow.org/)
-- [Sionna](https://sionna.readthedocs.io/)
+- [PySide6](https://doc.qt.io/qtforpython/) – Python bindings for Qt
+- [PyTorch](https://pytorch.org/) – Deep learning framework
+- [TensorFlow](https://www.tensorflow.org/) – Machine learning platform
+- [Sionna](https://sionna.readthedocs.io/) – Link-level communications simulator
+- [scikit-learn](https://scikit-learn.org/) – Machine learning library
+
+---
+
+## Citation
+
+If you use this software in your research, please cite:
+
+```bibtex
+@software{mixedsignal_gui,
+  author = {Maldei-Stumm, Nastasia},
+  title = {Mixed Signal GUI: Signal Generation & Classification Dashboard},
+  year = {2025},
+  url = {https://github.com/Nastasia-MS/FH11-Capstone}
+}
+```
+
+---
+
+## Support
+
+For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/Nastasia-MS/FH11-Capstone).

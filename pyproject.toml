@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mixedsignal-gui"
+version = "0.1.0"
+authors = [
+    { name="Nastasia Maldei-Stumm", email="n.maldeistumm@utexas.edu" }
+]
+description = "Signal generation, augmentation, and classification GUI with ML"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["signal-processing", "ML", "GUI", "PySide6", "Sionna", "Tensorflow"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = {text = "MIT"}
+
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib",
+    "torch",
+    "tensorflow",
+    "sionna",
+    "pyside6",
+    "scikit-learn",
+    "PyOpenGL",
+]
+
+[project.optional-dependencies]
+dev = [
+]
+matlab = [
+	# Must be manually installed from MATLAB
+]
+
+[project.urls]
+Homepage = "https://github.com/Nastasia-MS/FH11-Capstone"
+
+[project.scripts]
+mixedsignal-gui = "mixedsignal_gui.main_window:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mixedsignal_gui*"]
+
+[tool.setuptools.package-data]
+mixedsignal_gui = [
+    "resources/*",
+    "waveform_functions/*.m",
+]
