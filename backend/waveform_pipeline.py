@@ -43,5 +43,6 @@ class WaveformPipeline:
             "signal": data,
             "freqs": freqs,
             "spectrum": np.abs(ft),
-            "sps": sps
+            "sps": sps,
+            "baseband_symbols": waveform.metadata.get("baseband_symbols"),
         }

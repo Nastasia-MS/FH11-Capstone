@@ -49,6 +49,7 @@ class InferenceResultsTab(QWidget):
         self.class_labels = []   # set from trained_model_ready signal or manual load
         self.eval_data = None
         self.eval_labels = None
+        self.model_in_channels = 1
         
         self._cm_data = None
         self._roc_data = None
@@ -237,8 +238,18 @@ class InferenceResultsTab(QWidget):
 
         entries = self.dataset_manager.scan()
         base_entries = [e for e in entries if not e.get('augmented', False)]
+
+        # Prefer explicit test split, then fall back to name prefix.
+        test_entries = [
+            e for e in base_entries
+            if str(e.get('data_split', '')).lower() == 'test'
+            or str(e.get('name', '')).lower().startswith('test_')
+        ]
+        if test_entries:
+            base_entries = test_entries
+
         if not base_entries:
-            self.data_label.setText("No datasets in registry")
+            self.data_label.setText("No test datasets found in registry")
             return
 
         # Build label → index map from known class_labels or infer from data
@@ -268,7 +279,7 @@ class InferenceResultsTab(QWidget):
 
         self._build_eval_tensors(X_list, y_list)
         self.data_label.setText(
-            f"Loaded {len(X_list)} signals from registry ({len(label_map)} classes)"
+            f"Loaded {len(X_list)} test signals from registry ({len(label_map)} classes)"
         )
 
     def load_model(self):
@@ -303,72 +314,131 @@ class InferenceResultsTab(QWidget):
         """Internal: load model weights and update UI."""
         try:
             from backend.torch_models import get_model
-            state_dict = torch.load(filepath, map_location='cpu')
-            self.model = get_model('SimpleCNN', num_classes=num_classes)
+            import json as _json
+            
+            # Try to load metadata to get model architecture and parameters
+            meta_path = os.path.splitext(filepath)[0] + '.json'
+            model_name = 'SimpleCNN'
+            signal_length = 256
+            in_channels = 1
+            
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path) as f:
+                        meta = _json.load(f)
+                    model_name = meta.get('model_name', 'SimpleCNN')
+                    signal_length = meta.get('signal_length', 256)
+                    in_channels = meta.get('input_channels', 1)
+                    if meta.get('num_classes'):
+                        num_classes = meta['num_classes']
+                except Exception as e:
+                    print(f"Warning: could not load metadata: {e}")
+            
+            # Weights only to avoid arbitrary code execution
+            try:
+                state_dict = torch.load(filepath, map_location='cpu', weights_only=True)
+            except TypeError:
+                # Older PyTorch versions may not support weights_only
+                state_dict = torch.load(filepath, map_location='cpu')
+            
+            self.model = get_model(model_name, num_classes=num_classes, input_size=signal_length,
+                                   in_channels=in_channels)
             self.model.load_state_dict(state_dict)
             self.model.eval()
             self.model_path = filepath
-            self.model_label.setText(f"Loaded: {os.path.basename(filepath)}")
+            self.model_in_channels = int(in_channels)
+            self.model_label.setText(f"Loaded: {os.path.basename(filepath)} ({model_name})")
             self.load_data_btn.setEnabled(True)
         except Exception as e:
             self.model_label.setText(f"Failed to load: {e}")
             print(f"[InferenceTab] Error loading model: {e}")
+
+    def _prepare_iq_data(self, X_flat: np.ndarray) -> np.ndarray:
+        """Convert flat real/interleaved data to (N, 2, L) IQ channels."""
+        L = X_flat.shape[1]
+        if L % 2 != 0:
+            X_flat = X_flat[:, :L - 1]
+        I = X_flat[:, 0::2]
+        Q = X_flat[:, 1::2]
+        return np.stack([I, Q], axis=1)
+
+    def _normalize_iq(self, X_iq: np.ndarray) -> np.ndarray:
+        """Per-sample power normalization for IQ tensors (N, 2, L)."""
+        power = np.mean(X_iq[:, 0, :] ** 2 + X_iq[:, 1, :] ** 2, axis=1, keepdims=True)
+        power = np.maximum(power, 1e-10)
+        scale = np.sqrt(power)[:, np.newaxis, :]
+        return X_iq / scale
     
     def load_test_data(self):
-        """Load test data from a folder. Each subfolder = one class."""
+        """Load test data from a folder (recursive). Supports test_* filenames."""
         folder = QFileDialog.getExistingDirectory(self, "Select Test Data Folder")
         if not folder:
             return
 
         try:
-            subdirs = sorted([
-                d for d in os.listdir(folder)
-                if os.path.isdir(os.path.join(folder, d))
-            ])
-
             X_list, y_list = [], []
 
-            if subdirs:
-                # Subfolder-per-class layout
-                label_map = (
-                    {lbl: i for i, lbl in enumerate(self.class_labels)}
-                    if self.class_labels else {}
-                )
-                inferred = []
-                for subdir in subdirs:
-                    if subdir in label_map:
-                        idx = label_map[subdir]
-                    else:
-                        idx = len(inferred)
-                        inferred.append(subdir)
-                    class_path = os.path.join(folder, subdir)
-                    for fname in sorted(os.listdir(class_path)):
-                        fpath = os.path.join(class_path, fname)
-                        if os.path.isfile(fpath) and fname.lower().endswith(('.npy', '.npz', '.csv')):
-                            arr = self._load_array(fpath)
-                            if arr is not None:
-                                X_list.append(np.asarray(arr, dtype=np.float32).ravel())
-                                y_list.append(idx)
-                if inferred and not self.class_labels:
-                    self.class_labels = subdirs
-                    self.class_labels_label.setText(", ".join(self.class_labels))
-            else:
-                # Flat folder — sequential label fallback
-                n_cls = max(len(self.class_labels), 2)
-                for i, fname in enumerate(sorted(os.listdir(folder))):
-                    fpath = os.path.join(folder, fname)
-                    if os.path.isfile(fpath) and fname.lower().endswith(('.npy', '.npz', '.csv')):
-                        arr = self._load_array(fpath)
-                        if arr is not None:
-                            X_list.append(np.asarray(arr, dtype=np.float32).ravel())
-                            y_list.append(i % n_cls)
+            # Collect files recursively so nested class folders are supported.
+            signal_files = []
+            for root, _dirs, files in os.walk(folder):
+                for fname in files:
+                    if fname.lower().endswith(('.npy', '.npz', '.csv')):
+                        signal_files.append(os.path.join(root, fname))
+
+            if not signal_files:
+                self.data_label.setText("No supported files found in selected folder")
+                return
+
+            # Prefer files marked as test by name, but if none exist use all files.
+            test_like = [
+                p for p in signal_files
+                if os.path.basename(p).lower().startswith('test_')
+            ]
+            if test_like:
+                signal_files = test_like
+
+            # Build label map from known class labels first.
+            label_map = (
+                {lbl: i for i, lbl in enumerate(self.class_labels)}
+                if self.class_labels else {}
+            )
+            inferred_labels = []
+
+            def infer_modulation(path: str) -> str:
+                base = os.path.basename(path)
+                stem = os.path.splitext(base)[0]
+                parts = stem.split('_')
+                # Expected patterns: test_QAM_16_..., train_PSK_4_..., or QAM_16_...
+                if len(parts) >= 2 and parts[0].lower() in ('test', 'train'):
+                    return parts[1]
+                if parts:
+                    return parts[0]
+                return os.path.basename(os.path.dirname(path))
+
+            for fpath in sorted(signal_files):
+                mod = infer_modulation(fpath)
+                if mod in label_map:
+                    idx = label_map[mod]
+                else:
+                    if mod not in inferred_labels:
+                        inferred_labels.append(mod)
+                    idx = len(label_map) + inferred_labels.index(mod)
+
+                arr = self._load_array(fpath)
+                if arr is not None:
+                    X_list.append(np.asarray(arr, dtype=np.float32).ravel())
+                    y_list.append(idx)
+
+            if inferred_labels and not self.class_labels:
+                self.class_labels = inferred_labels
+                self.class_labels_label.setText(", ".join(self.class_labels))
 
             if not X_list:
                 self.data_label.setText("No supported files found")
                 return
 
             self._build_eval_tensors(X_list, y_list)
-            self.data_label.setText(f"Loaded {len(X_list)} samples from folder")
+            self.data_label.setText(f"Loaded {len(X_list)} test samples from folder")
 
         except Exception as e:
             self.data_label.setText(f"Error loading data: {e}")
@@ -381,8 +451,15 @@ class InferenceResultsTab(QWidget):
         for i, a in enumerate(X_list):
             L = min(len(a), max_len)
             X[i, :L] = a[:L]
-        # Shape: (N, 1, L) — standard 1-D CNN input
-        X = X[:, np.newaxis, :]
+
+        # Shape according to loaded model input channels.
+        # 2-channel models (e.g., ResNet1DOptimized) expect IQ format (N, 2, L/2).
+        if int(getattr(self, 'model_in_channels', 1)) == 2:
+            X = self._prepare_iq_data(X)
+            X = self._normalize_iq(X)
+        else:
+            X = X[:, np.newaxis, :]
+
         self.eval_data = torch.from_numpy(X)
         self.eval_labels = np.asarray(y_list, dtype=np.int64)
         self.eval_cm_btn.setEnabled(True)

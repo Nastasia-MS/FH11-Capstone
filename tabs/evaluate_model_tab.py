@@ -302,15 +302,18 @@ class EvaluateModelTab(QWidget):
                 model_name = meta.get('model_name', 'SimpleCNN')
                 num_classes = meta.get('num_classes', 2)
                 signal_length = meta.get('signal_length', 256)
+                in_channels = meta.get('input_channels', 1)
                 if meta.get('class_labels'):
                     self.class_labels = meta['class_labels']
             else:
                 model_name = 'SimpleCNN'
                 num_classes = 2
                 signal_length = 256
+                in_channels = 1
 
             state_dict = torch.load(filepath, map_location='cpu', weights_only=True)
-            model = get_model(model_name, num_classes=num_classes, input_size=signal_length)
+            model = get_model(model_name, num_classes=num_classes, input_size=signal_length,
+                              in_channels=in_channels)
             model.load_state_dict(state_dict)
             model.eval()
 

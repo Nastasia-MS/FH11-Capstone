@@ -1,11 +1,253 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QComboBox, QFrame, QScrollArea,
-                               QSlider, QTabWidget, QDoubleSpinBox, QSpinBox)
+                               QSlider, QTabWidget, QDoubleSpinBox, QSpinBox,
+                               QDialog, QCheckBox, QGridLayout, QLineEdit)
 from PySide6.QtCore import Qt
 
 from widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 import numpy as np
 from datetime import datetime
+
+
+class QuickTestDataDialog(QDialog):
+    """Quick dialog to generate small test datasets for ML validation."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Generate Quick Test Data")
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(250)
+        
+        self.modulations_available = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
+        self.selected_modulations = set(self.modulations_available)  # All selected by default
+        
+        # M values for minimal test: just 1-2 M values per modulation
+        self.test_m_values = {
+            "PAM":  [4],
+            "QAM":  [16],
+            "PSK":  [4],
+            "FSK":  [2],
+            "FHSS": [8],
+        }
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Create minimal configuration UI."""
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("Select modulations for test data:"))
+        
+        # Checkboxes for each modulation
+        self.mod_checkboxes = {}
+        for mod in self.modulations_available:
+            chk = QCheckBox(mod)
+            chk.setChecked(True)
+            chk.stateChanged.connect(lambda state, m=mod: self._update_selection(m, state))
+            self.mod_checkboxes[mod] = chk
+            layout.addWidget(chk)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Samples per modulation:"))
+        
+        self.samples_spin = QSpinBox()
+        self.samples_spin.setRange(1, 50)
+        self.samples_spin.setValue(3)  # Small default for quick generation
+        layout.addWidget(self.samples_spin)
+        
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("Note: Uses minimal M values per modulation for quick testing."))
+        
+        layout.addStretch()
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        ok_btn = QPushButton("Generate Test Data")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def _update_selection(self, modulation, state):
+        """Update selected modulations."""
+        if state == 2:  # Checked (Qt.CheckState.Checked)
+            self.selected_modulations.add(modulation)
+        else:
+            self.selected_modulations.discard(modulation)
+    
+    def get_config(self):
+        """Return test data configuration."""
+        return {
+            'modulations': list(self.selected_modulations),
+            'samples_per_mod': self.samples_spin.value(),
+            'm_values': self.test_m_values,
+        }
+
+
+class BatchGenerationConfigDialog(QDialog):
+    """Dialog to configure per-modulation parameters for batch generation."""
+    
+    def __init__(self, global_params, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Generation Configuration")
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(500)
+        
+        self.global_params = global_params
+        self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
+        
+        # Default M values for each modulation
+        self.default_m_values = {
+            "PAM":  [2, 4, 8, 16],
+            "QAM":  [4, 16, 64],
+            "PSK":  [2, 4, 8],
+            "FSK":  [2, 4, 8],
+            "FHSS": [4, 8, 16],
+        }
+        
+        # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
+        self.config = {}
+        for mod in self.modulations:
+            self.config[mod] = {
+                'enabled': True,
+                'M_values': self.default_m_values[mod].copy(),
+                'fs_override': None,
+                'fc_override': None,
+                'Tsymb_override': None,
+                'num_samples': 10,
+            }
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Create the configuration UI."""
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("Configure per-modulation parameters for batch generation"))
+        
+        # Scroll area for modulation configs
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # Create config for each modulation
+        for mod in self.modulations:
+            mod_frame = self.create_modulation_frame(mod)
+            scroll_layout.addWidget(mod_frame)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        ok_btn = QPushButton("Start Batch Generation")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def create_modulation_frame(self, modulation):
+        """Create configuration frame for one modulation type."""
+        frame = QFrame()
+        frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 4px; } QFrame > * { margin: 4px; }")
+        layout = QGridLayout(frame)
+        
+        row = 0
+        
+        # Enable checkbox
+        enable_chk = QCheckBox(modulation)
+        enable_chk.setChecked(True)
+        enable_chk.stateChanged.connect(lambda: self._update_config(modulation, 'enabled', enable_chk.isChecked()))
+        layout.addWidget(enable_chk, row, 0, 1, 2)
+        
+        row += 1
+        
+        # M values (comma-separated)
+        layout.addWidget(QLabel("M values (comma-separated):"), row, 0)
+        m_edit = QLineEdit()
+        m_edit.setText(", ".join(map(str, self.default_m_values[modulation])))
+        m_edit.editingFinished.connect(lambda: self._parse_m_values(modulation, m_edit.text()))
+        layout.addWidget(m_edit, row, 1)
+        
+        row += 1
+        
+        # Num samples
+        layout.addWidget(QLabel("Samples per M value:"), row, 0)
+        samples_spin = QSpinBox()
+        samples_spin.setRange(1, 100)
+        samples_spin.setValue(10)
+        samples_spin.valueChanged.connect(lambda v: self._update_config(modulation, 'num_samples', v))
+        layout.addWidget(samples_spin, row, 1)
+        
+        row += 1
+        
+        # Override fs (optional)
+        layout.addWidget(QLabel("fs override (Hz, leave blank for global):"), row, 0)
+        fs_edit = QLineEdit()
+        fs_edit.setPlaceholderText("e.g., 48000")
+        fs_edit.editingFinished.connect(lambda: self._parse_float(modulation, 'fs_override', fs_edit.text()))
+        layout.addWidget(fs_edit, row, 1)
+        
+        row += 1
+        
+        # Override fc (optional)
+        layout.addWidget(QLabel("fc override (Hz, leave blank for global):"), row, 0)
+        fc_edit = QLineEdit()
+        fc_edit.setPlaceholderText("e.g., 6000")
+        fc_edit.editingFinished.connect(lambda: self._parse_float(modulation, 'fc_override', fc_edit.text()))
+        layout.addWidget(fc_edit, row, 1)
+        
+        row += 1
+        
+        # Override Tsymb (optional)
+        layout.addWidget(QLabel("Tsymb override (seconds, leave blank for global):"), row, 0)
+        tsymb_edit = QLineEdit()
+        tsymb_edit.setPlaceholderText("e.g., 0.001")
+        tsymb_edit.editingFinished.connect(lambda: self._parse_float(modulation, 'Tsymb_override', tsymb_edit.text()))
+        layout.addWidget(tsymb_edit, row, 1)
+        
+        return frame
+    
+    def _update_config(self, modulation, key, value):
+        """Update config for a modulation."""
+        self.config[modulation][key] = value
+    
+    def _parse_m_values(self, modulation, text):
+        """Parse comma-separated M values."""
+        try:
+            values = [int(v.strip()) for v in text.split(',') if v.strip()]
+            if values:
+                self.config[modulation]['M_values'] = values
+        except ValueError:
+            pass  # Ignore invalid input
+    
+    def _parse_float(self, modulation, key, text):
+        """Parse optional float override."""
+        try:
+            if text.strip():
+                self.config[modulation][key] = float(text.strip())
+            else:
+                self.config[modulation][key] = None
+        except ValueError:
+            pass  # Ignore invalid input
+    
+    def get_config(self):
+        """Return the configured parameters."""
+        return self.config
 
 
 class WaveformSelectionTab(QWidget):
@@ -30,6 +272,7 @@ class WaveformSelectionTab(QWidget):
         self.current_data = None
         self.current_fs = None
         self.current_modulation = None
+        self.current_baseband_symbols = None
         
         self.setup_ui()
     
@@ -178,7 +421,15 @@ class WaveformSelectionTab(QWidget):
         # Batch generate button
         batch_btn = QPushButton("📦 Batch Generate")
         batch_btn.clicked.connect(self.batch_generate)
-        layout.addWidget(batch_btn)
+        
+        # Quick test data button
+        test_btn = QPushButton("⚡ Quick Test Data")
+        test_btn.clicked.connect(self.generate_quick_test_data)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(batch_btn)
+        btn_layout.addWidget(test_btn)
+        layout.addLayout(btn_layout)
         
         return panel
     
@@ -269,6 +520,7 @@ class WaveformSelectionTab(QWidget):
             M=self.M,
             modulation=self.current_modulation,
             nsymb=self.Nsymb,
+            baseband_symbols=self.current_baseband_symbols,
         )
         self.spectrogram_plot.plot_data(x=data, fs=fs, modulation=self.current_modulation)
 
@@ -314,6 +566,7 @@ class WaveformSelectionTab(QWidget):
         self.current_data = result["signal"]
         self.current_fs = fs
         self.current_modulation = modulation
+        self.current_baseband_symbols = result.get("baseband_symbols")
 
         self.update_waveform_plots()
 
@@ -347,31 +600,140 @@ class WaveformSelectionTab(QWidget):
 
     
     def batch_generate(self):
-        """Generate multiple datasets with random parameters for each modulation."""
+        """Generate datasets with automatic train/test split (75%/25% ratio)."""
         import random
 
-        num_samples = self.batch_samples_spin.value()
-        modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
-
-        m_values = {
-            "PAM":  [2, 4, 8, 16],
-            "QAM":  [4, 16, 64],
-            "PSK":  [2, 4, 8],
-            "FSK":  [2, 4, 8],
-            "FHSS": [4, 8, 16],
+        # Show configuration dialog
+        global_params = {
+            'fs': self.fs,
+            'fc': self.fc,
+            'Tsymb': self.Tsymb,
+            'var': self.var,
+            'alpha': self.alpha,
+            'span': self.span,
+            'pulse_shape': self.pulse_shape_combo.currentText(),
         }
-
+        
+        dialog = BatchGenerationConfigDialog(global_params, self)
+        if dialog.exec() != QDialog.Accepted:
+            return  # User cancelled
+        
+        batch_config = dialog.get_config()
+        
+        modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
         from backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)
 
-        total = num_samples * len(modulations)
-        count = 0
-        print(f"Starting batch generation: {num_samples} x {len(modulations)} = {total} total")
+        # Calculate total samples for progress tracking
+        total = 0
+        for modulation in modulations:
+            if batch_config[modulation]['enabled']:
+                num_samples = batch_config[modulation]['num_samples']
+                total += num_samples * len(batch_config[modulation]['M_values'])
+
+        # Train/test split ratio: 0.25 means 75% train, 25% test
+        test_ratio = 0.25
+        
+        count_train = 0
+        count_test = 0
+        print(f"Starting batch generation with train/test split (75%/25%): {total} total samples")
 
         for modulation in modulations:
-            for _ in range(num_samples):
+            if not batch_config[modulation]['enabled']:
+                print(f"Skipping {modulation} (disabled)")
+                continue
+            
+            mod_config = batch_config[modulation]
+            
+            # Use modulation-specific overrides or fall back to global values
+            fs = mod_config['fs_override'] if mod_config['fs_override'] is not None else self.fs
+            fc = mod_config['fc_override'] if mod_config['fc_override'] is not None else self.fc
+            Tsymb = mod_config['Tsymb_override'] if mod_config['Tsymb_override'] is not None else self.Tsymb
+            
+            for M in mod_config['M_values']:
+                for sample_idx in range(mod_config['num_samples']):
+                    try:
+                        result = pipeline.generate(
+                            fs=fs,
+                            Tsymb=Tsymb,
+                            Nsymb=self.Nsymb,
+                            fc=fc,
+                            M=M,
+                            modulation=modulation,
+                            var=self.var,
+                            alpha=self.alpha,
+                            span=self.span,
+                            pulse_shape=self.pulse_shape_combo.currentText(),
+                        )
+                        data = result["signal"]
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        
+                        # Determine if this sample goes to train or test set
+                        is_test = random.random() < test_ratio
+                        split_prefix = "test" if is_test else "train"
+                        
+                        # Create dataset name with split prefix
+                        name = f"{split_prefix}_{modulation}_{M}_{timestamp}"
+
+                        metadata = {
+                            "source":      "batch_generated",
+                            "data_split":  "test" if is_test else "train",
+                            "modulation":  modulation,
+                            "M":           int(M),
+                            "fc":          fc,
+                            "fs":          fs,
+                            "Tsymb":       Tsymb,
+                            "Nsymb":       self.Nsymb,
+                            "alpha":       self.alpha,
+                            "span":        self.span,
+                            "pulse_shape": self.pulse_shape_combo.currentText(),
+                            "timestamp":   timestamp,
+                        }
+
+                        self.dataset_manager.save(name, data, metadata)
+                        
+                        if is_test:
+                            count_test += 1
+                        else:
+                            count_train += 1
+                        
+                        total_saved = count_train + count_test
+                        if total_saved % 10 == 0:
+                            print(f"  Progress: {total_saved}/{total} (train: {count_train}, test: {count_test})")
+
+                    except Exception as e:
+                        print(f"X Error generating {modulation} M={M}: {e}")
+
+        total_saved = count_train + count_test
+        print(f"Batch complete: {total_saved}/{total} datasets saved")
+        print(f"  Training set: {count_train} samples")
+        print(f"  Test set: {count_test} samples")
+
+    def generate_quick_test_data(self):
+        """Generate small test datasets quickly for ML model validation."""
+        # Show test data configuration dialog
+        dialog = QuickTestDataDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        
+        test_config = dialog.get_config()
+        modulations = test_config['modulations']
+        samples_per_mod = test_config['samples_per_mod']
+        m_values_dict = test_config['m_values']
+        
+        from backend.waveform_pipeline import WaveformPipeline
+        pipeline = WaveformPipeline(self.matlab)
+        
+        total = len(modulations) * samples_per_mod
+        count = 0
+        
+        print(f"Starting quick test data generation: {total} samples ({len(modulations)} modulations)")
+        
+        for modulation in modulations:
+            M = m_values_dict[modulation][0]  # Use first (minimal) M value
+            
+            for sample_idx in range(samples_per_mod):
                 try:
-                    M = random.choice(m_values[modulation])
                     result = pipeline.generate(
                         fs=self.fs,
                         Tsymb=self.Tsymb,
@@ -386,10 +748,11 @@ class WaveformSelectionTab(QWidget):
                     )
                     data = result["signal"]
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                    name = f"{modulation}_{M}_{timestamp}"
-
+                    # Use "test_" prefix for easy identification
+                    name = f"test_{modulation}_{M}_{timestamp}"
+                    
                     metadata = {
-                        "source":      "batch_generated",
+                        "source":      "quick_test_generated",
                         "modulation":  modulation,
                         "M":           int(M),
                         "fc":          self.fc,
@@ -401,13 +764,11 @@ class WaveformSelectionTab(QWidget):
                         "pulse_shape": self.pulse_shape_combo.currentText(),
                         "timestamp":   timestamp,
                     }
-
+                    
                     self.dataset_manager.save(name, data, metadata)
                     count += 1
-                    if count % 10 == 0:
-                        print(f"  Progress: {count}/{total}")
-
+                    
                 except Exception as e:
-                    print(f"X Error generating {modulation} M={M}: {e}")
-
-        print(f"Batch complete: {count}/{total} datasets saved")
+                    print(f"X Error generating test {modulation} M={M}: {e}")
+        
+        print(f"Test data generation complete: {count}/{total} samples saved (prefix: 'test_')")

@@ -1,4 +1,4 @@
-function sig = waveform_generator(output_len, fs, Tsymb, fc, M, modulation, varargin)
+function [sig, symbols_out] = waveform_generator(output_len, fs, Tsymb, fc, M, modulation, varargin)
     % WAVEFORM_GENERATOR - Unified RF waveform generator with pulse shaping
     %
     % Generates baseband (complex IQ) or passband (real) waveforms.
@@ -36,6 +36,8 @@ function sig = waveform_generator(output_len, fs, Tsymb, fc, M, modulation, vara
     %   % PSK with custom roll-off
     %   sig = waveform_generator(98304, 48000, 0.001, 6000, 8, 'PSK', ...
     %                            'alpha', 0.5);
+
+    symbols_out = [];
 
     %% Parse optional arguments
     p = inputParser;
@@ -75,6 +77,7 @@ function sig = waveform_generator(output_len, fs, Tsymb, fc, M, modulation, vara
         else
             sig = generate_fsk_passband(output_len, fs, Tsymb, fc, M);
         end
+        symbols_out = [];
         return;
     end
 
@@ -85,11 +88,13 @@ function sig = waveform_generator(output_len, fs, Tsymb, fc, M, modulation, vara
         else
             sig = generate_fhss_passband(output_len, fs, Tsymb, fc, M);
         end
+        symbols_out = [];
         return;
     end
 
     %% Generate symbols based on modulation type
     symbols = generate_symbols(num_symbols, M, modulation);
+    symbols_out = symbols(:);
 
     %% Apply pulse shaping
     % upfirdn: upsample by sps, filter with h, downsample by 1

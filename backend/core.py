@@ -109,6 +109,7 @@ class Waveform:
         self.matlab_engine = matlab_engine
         self._generator = generator_impl
         self._data: Optional[np.ndarray] = None
+        self._metadata = {}
 
     def _ensure_generator(self):
         if self._generator is not None:
@@ -120,6 +121,7 @@ class Waveform:
     def generate(self) -> np.ndarray:
         self._ensure_generator()
         self._data = self._generator.generate(self.config)
+        self._metadata = dict(getattr(self._generator, "last_metadata", {}) or {})
         return self._data
 
     def generate_data(self):
@@ -139,3 +141,7 @@ class Waveform:
         if self._data is None:
             raise RuntimeError("Waveform not generated yet")
         return self._data
+
+    @property
+    def metadata(self) -> dict:
+        return dict(self._metadata)

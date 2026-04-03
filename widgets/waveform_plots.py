@@ -185,13 +185,14 @@ class IQDomainPlot(PlottingWidget):
         
     def plot_data(self, data=None, fs=None, fc=None, sps=None, M=None,
                   modulation=None, alpha=0.35, span=8, pulse_shape='rrc',
-                  nsymb=None):
+                  nsymb=None, baseband_symbols=None):
         """Plot IQ constellation using matched filter demodulation."""
         # Store arguments for theme updates
         self._last_plot_args = {
             'data': data, 'fs': fs, 'fc': fc, 'sps': sps, 'M': M,
             'modulation': modulation, 'alpha': alpha, 'span': span,
-            'pulse_shape': pulse_shape, 'nsymb': nsymb
+            'pulse_shape': pulse_shape, 'nsymb': nsymb,
+            'baseband_symbols': baseband_symbols,
         }
         
         self.figure.clear()
@@ -211,20 +212,25 @@ class IQDomainPlot(PlottingWidget):
             self._plot_fhss_trajectory(ax, data, fs, fc, sps, M)
         else:
             self._plot_constellation(ax, data, fs, fc, sps, M, modulation,
-                                     alpha, span, pulse_shape, nsymb)
+                                     alpha, span, pulse_shape, nsymb,
+                                     baseband_symbols=baseband_symbols)
 
         _apply_mpl_theme(self.figure, ax)
         self.canvas.draw()
     
     def _plot_constellation(self, ax, data, fs, fc, sps, M, modulation,
-                            alpha, span, pulse_shape, nsymb):
+                            alpha, span, pulse_shape, nsymb,
+                            baseband_symbols=None):
         """Plot constellation using matched filter demodulation."""
         M = int(M)
 
-        rxRecovered = demodulate_to_symbols(
-            data, fs, fc, int(sps), alpha=alpha, span=int(span),
-            pulse_shape=pulse_shape, nsymb=nsymb,
-        )
+        if modulation in {"QAM", "PSK"} and baseband_symbols is not None and len(baseband_symbols) > 0:
+            rxRecovered = np.asarray(baseband_symbols).flatten()
+        else:
+            rxRecovered = demodulate_to_symbols(
+                data, fs, fc, int(sps), alpha=alpha, span=int(span),
+                pulse_shape=pulse_shape, nsymb=nsymb,
+            )
 
         I_symbols = np.real(rxRecovered)
         Q_symbols = np.imag(rxRecovered)

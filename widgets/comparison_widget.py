@@ -6,7 +6,7 @@ Uses the same DSP routines as the Waveform Generation tab
 and spectrograms are visually consistent.
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QApplication
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QApplication, QTabWidget, QFrame
 from PySide6.QtCore import QEvent
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -111,15 +111,13 @@ class ComparisonWidget(QWidget):
         self._ant_combo.setVisible(False)
         layout.addLayout(self._ant_bar)
 
-        bg, _, _ = _mpl_theme()
-        self.figure = Figure(figsize=(14, 10), facecolor=bg)
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setStyleSheet("background: transparent;")
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        _theme_toolbar(self.toolbar)
-
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
+        # Each row gets its own tab so the plot groups are easier to inspect.
+        self.plot_tabs = QTabWidget()
+        self._tab_specs = {}
+        self._create_plot_tab("signals", "Signals", (14, 4.5))
+        self._create_plot_tab("spectrograms", "Spectrograms", (14, 4.5))
+        self._create_plot_tab("constellation", "Constellation", (8, 6))
+        layout.addWidget(self.plot_tabs)
         self.setLayout(layout)
 
         self._last_plot_args = {}
@@ -128,19 +126,21 @@ class ComparisonWidget(QWidget):
 
     def changeEvent(self, event):
         if event.type() == QEvent.Type.PaletteChange:
-            _theme_toolbar(self.toolbar)
-            bg, _, _ = _mpl_theme()
-            self.figure.patch.set_facecolor(bg)
-            for ax in self.figure.get_axes():
-                _apply_mpl_theme(self.figure, ax)
-            self.canvas.draw_idle()
+            for spec in self._tab_specs.values():
+                _theme_toolbar(spec['toolbar'])
+                bg, _, _ = _mpl_theme()
+                spec['figure'].patch.set_facecolor(bg)
+                for ax in spec['figure'].get_axes():
+                    _apply_mpl_theme(spec['figure'], ax)
+                spec['canvas'].draw_idle()
             self._replot_with_theme()
         super().changeEvent(event)
     
     def _replot_with_theme(self):
-        _theme_toolbar(self.toolbar)
-        bg, _, _ = _mpl_theme()
-        self.figure.patch.set_facecolor(bg)
+        for spec in self._tab_specs.values():
+            _theme_toolbar(spec['toolbar'])
+            bg, _, _ = _mpl_theme()
+            spec['figure'].patch.set_facecolor(bg)
         if self._last_plot_args:
             self.plot_comparison(**self._last_plot_args)
 
@@ -151,8 +151,32 @@ class ComparisonWidget(QWidget):
 
     def clear_plots(self):
         """Clear all subplots"""
-        self.figure.clear()
-        self.canvas.draw()
+        for spec in self._tab_specs.values():
+            spec['figure'].clear()
+            spec['canvas'].draw()
+
+    def _create_plot_tab(self, key, title, fig_size):
+        """Create a tab containing its own figure, canvas, and toolbar."""
+        bg, _, _ = _mpl_theme()
+        figure = Figure(figsize=fig_size, facecolor=bg)
+        canvas = FigureCanvas(figure)
+        canvas.setStyleSheet("background: transparent;")
+        toolbar = NavigationToolbar(canvas, self)
+        _theme_toolbar(toolbar)
+
+        container = QFrame()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.addWidget(toolbar)
+        container_layout.addWidget(canvas)
+
+        self._tab_specs[key] = {
+            'figure': figure,
+            'canvas': canvas,
+            'toolbar': toolbar,
+            'container': container,
+        }
+        self.plot_tabs.addTab(container, title)
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -175,7 +199,8 @@ class ComparisonWidget(QWidget):
             'nsymb': nsymb
         }
 
-        self.figure.clear()
+        for spec in self._tab_specs.values():
+            spec['figure'].clear()
 
         # Multi-channel augmented signal: select antenna via combo box
         is_mc = isinstance(augmented_signal, np.ndarray) and augmented_signal.ndim == 2
@@ -207,30 +232,36 @@ class ComparisonWidget(QWidget):
 
         any_complex = np.iscomplexobj(clean_signal) or np.iscomplexobj(aug_for_plot)
 
-        # ---- 1. Time Domain Overlay ----
-        ax1 = self.figure.add_subplot(3, 2, 1)
+        # Tab 1: time domain + spectrum
+        sig_fig = self._tab_specs['signals']['figure']
+        ax1 = sig_fig.add_subplot(1, 2, 1)
+        ax2 = sig_fig.add_subplot(1, 2, 2)
         self._plot_time_domain(ax1, clean_signal, aug_for_plot, fs)
-
-        # ---- 2. Power Spectrum Overlay (Welch PSD) ----
-        ax2 = self.figure.add_subplot(3, 2, 2)
         self._plot_psd(ax2, clean_signal, aug_for_plot, fs, any_complex)
+        _apply_mpl_theme(sig_fig, ax1, ax2)
+        sig_fig.tight_layout()
+        self._tab_specs['signals']['canvas'].draw()
 
-        # ---- 3 & 4. Spectrograms ----
-        ax3 = self.figure.add_subplot(3, 2, 3)
-        ax4 = self.figure.add_subplot(3, 2, 4)
+        # Tab 2: spectrograms
+        spec_fig = self._tab_specs['spectrograms']['figure']
+        ax3 = spec_fig.add_subplot(1, 2, 1)
+        ax4 = spec_fig.add_subplot(1, 2, 2)
         self._plot_spectrogram(ax3, clean_signal, fs, any_complex, modulation, 'Clean Signal Spectrogram')
         self._plot_spectrogram(ax4, aug_for_plot, fs, any_complex, modulation, f'Augmented Signal Spectrogram{mc_label}')
+        _apply_mpl_theme(spec_fig, ax3, ax4)
+        spec_fig.tight_layout()
+        self._tab_specs['spectrograms']['canvas'].draw()
 
-        # ---- 5. Constellation / IQ Trajectory ----
-        ax5 = self.figure.add_subplot(3, 2, 5)
+        # Tab 3: constellation / IQ trajectory
+        const_fig = self._tab_specs['constellation']['figure']
+        ax5 = const_fig.add_subplot(1, 1, 1)
         self._plot_constellation(ax5, clean_signal, aug_for_plot, fs,
-                                 fc=fc, sps=sps, modulation=modulation,
-                                 M=M, alpha=alpha, span=span,
-                                 pulse_shape=pulse_shape, nsymb=nsymb)
-
-        _apply_mpl_theme(self.figure, ax1, ax2, ax3, ax4, ax5)
-        self.figure.tight_layout()
-        self.canvas.draw()
+                     fc=fc, sps=sps, modulation=modulation,
+                     M=M, alpha=alpha, span=span,
+                     pulse_shape=pulse_shape, nsymb=nsymb)
+        _apply_mpl_theme(const_fig, ax5)
+        const_fig.tight_layout()
+        self._tab_specs['constellation']['canvas'].draw()
 
     # ------------------------------------------------------------------
     # Subplot helpers
@@ -318,7 +349,7 @@ class ComparisonWidget(QWidget):
         ax.set_xlabel('Time (µs)')
         ax.set_ylabel('Frequency (MHz)')
         _, fg, _ = _mpl_theme()
-        cb = self.figure.colorbar(im, ax=ax, label='dB/Hz')
+        cb = ax.figure.colorbar(im, ax=ax, label='dB/Hz')
         cb.ax.yaxis.set_tick_params(color=fg)
         cb.ax.yaxis.label.set_color(fg)
         plt.setp(cb.ax.yaxis.get_ticklabels(), color=fg)
