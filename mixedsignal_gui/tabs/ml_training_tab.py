@@ -529,16 +529,20 @@ class MLTrainingTab(QWidget):
             return
 
         entries = self.dataset_manager.scan()
-        base_entries = [e for e in entries if not e.get('augmented', False)]
+        # Only use non-augmented entries that have an explicit modulation field
+        base_entries = [
+            e for e in entries
+            if not e.get('augmented', False) and e.get('modulation')
+        ]
 
         if not base_entries:
-            self.status_label.setText("No datasets in registry \u2013 generate some first.")
+            self.status_label.setText("No datasets with modulation metadata found \u2013 generate some first.")
             return
 
         from collections import defaultdict
         by_modulation = defaultdict(list)
         for entry in base_entries:
-            mod = entry.get('modulation', entry['name'])
+            mod = entry['modulation']
             npy = entry.get('_npy_path', '')
             if npy:
                 by_modulation[mod].append(npy)

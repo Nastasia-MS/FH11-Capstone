@@ -604,16 +604,19 @@ class DataVisualizationTab(QWidget):
             return
 
         entries = self.dataset_manager.scan()
-        base_entries = [e for e in entries if not e.get('augmented', False)]
+        base_entries = [
+            e for e in entries
+            if not e.get('augmented', False) and e.get('modulation')
+        ]
         if not base_entries:
-            QMessageBox.warning(self, "No data", "No datasets found in registry. Generate some first.")
+            QMessageBox.warning(self, "No data", "No datasets with modulation metadata found. Generate some first.")
             return
 
         # Group by modulation — each unique modulation = one class
         from collections import defaultdict
         by_modulation = defaultdict(list)
         for entry in base_entries:
-            mod = entry.get('modulation', entry['name'])
+            mod = entry['modulation']
             npy = entry.get('_npy_path', '')
             if npy:
                 by_modulation[mod].append(npy)
