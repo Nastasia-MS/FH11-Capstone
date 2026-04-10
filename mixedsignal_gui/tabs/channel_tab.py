@@ -9,6 +9,7 @@ from PySide6.QtGui import QPalette, QColor
 from mixedsignal_gui.widgets.toggle_switch import ToggleSwitch
 from mixedsignal_gui.widgets.noise_spectrum import NoiseSpectrumWidget
 from mixedsignal_gui.widgets.waveform_plots import PlottingWidget
+from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift,
                                   StochasticTDLAugmentation, SionnaRTAugmentation)
@@ -48,6 +49,7 @@ class ChannelNoiseTab(QWidget):
         self._active_entry = None   # currently selected metadata dict
 
         self.setup_ui()
+        install_wheel_blocker(self)
         self.refresh_dataset_list()
 
     def setup_ui(self):

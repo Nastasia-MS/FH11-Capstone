@@ -8,7 +8,7 @@ import concurrent.futures
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import TensorDataset, DataLoader
 
 from .torch_models import get_model
@@ -149,9 +149,10 @@ class TrainerThread(QThread):
                     X_list[i] = x
                     y_list[i] = y_val
         
-        # Filter Nones
-        X_list = [x for x in X_list if x is not None]
-        y_list = [y for y in y_list if y is not None]
+        # Filter Nones — keep X and y paired so indices stay aligned
+        paired = [(x, y) for x, y in zip(X_list, y_list) if x is not None]
+        X_list = [p[0] for p in paired]
+        y_list = [p[1] for p in paired]
         
         print(f"Loaded {len(X_list)} samples in {time.time() - start_load:.2f}s")
 
@@ -254,7 +255,8 @@ class TrainerThread(QThread):
 
         # Scheduler & Scaler
         warmup_epochs = min(3, max(1, int(self.epochs * 0.15)))
-        scaler = GradScaler(enabled=torch.cuda.is_available())
+        use_amp = (self.device.type == 'cuda')
+        scaler = GradScaler('cuda', enabled=use_amp)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=max(1, self.epochs - warmup_epochs),
@@ -293,7 +295,7 @@ class TrainerThread(QThread):
                     optimizer.zero_grad(set_to_none=True)
                     
                     # Mixed Precision Forward
-                    with autocast(enabled=torch.cuda.is_available()):
+                    with autocast('cuda', enabled=use_amp):
                         outputs = model(X_batch)
                         loss = criterion(outputs, y_batch)
                     
@@ -323,7 +325,7 @@ class TrainerThread(QThread):
                         X_batch = X_batch.to(self.device, non_blocking=True)
                         y_batch = y_batch.to(self.device, non_blocking=True)
                         
-                        with autocast(enabled=torch.cuda.is_available()):
+                        with autocast('cuda', enabled=use_amp):
                             outputs = model(X_batch)
                             loss = criterion(outputs, y_batch)
                             

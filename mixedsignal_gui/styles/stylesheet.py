@@ -287,18 +287,36 @@ def build_stylesheet(theme_name: str = "Light (Default)", font_size: int = 10,
             background-color: {t['bg_card']};
             border: 1px solid {t['border']};
             border-radius: {r}px;
-            padding: 4px 8px;
+            padding: 4px 28px 4px 8px;
             font-size: {font_size - 1}pt;
             color: {t['text_primary']};
             min-height: 12px;
         }}
-        QSpinBox::up-arrow {{
+        QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
+            subcontrol-origin: border;
+            width: 18px;
+            border-left: 1px solid {t['border']};
+            background: {t['bg_card']};
+        }}
+        QAbstractSpinBox::up-button {{
+            subcontrol-position: top right;
+            border-top-right-radius: {r}px;
+        }}
+        QAbstractSpinBox::down-button {{
+            subcontrol-position: bottom right;
+            border-bottom-right-radius: {r}px;
+        }}
+        QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {{
+            width: 0px;
+            height: 0px;
+        }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
             image: none;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
             border-bottom: 5px solid {t['text_secondary']};
         }}
-        QSpinBox::down-arrow {{
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
             image: none;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;

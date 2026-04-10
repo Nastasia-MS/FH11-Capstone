@@ -11,6 +11,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
+from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 
 # Must stay in sync with trainer.py
 IQ_MODELS = {'ResNet1DOptimized'}
@@ -61,6 +62,7 @@ class EvaluateModelTab(QWidget):
         self._last_modulation = None
 
         self.setup_ui()
+        install_wheel_blocker(self)
 
     # ------------------------------------------------------------------
     # UI

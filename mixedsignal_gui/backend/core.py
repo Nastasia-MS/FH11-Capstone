@@ -35,6 +35,9 @@ class WaveformConfig:
 
         self._validate()
 
+    # Modulations that bypass pulse shaping and don't return symbols
+    _NO_SYMBOL_MODS = {"FSK", "FHSS", "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR"}
+
     def _validate(self):
         sps = self.fs * self.Tsymb
         if abs(sps - round(sps)) > 1e-9:
@@ -55,6 +58,16 @@ class WaveformConfig:
         elif self.modulation == "FHSS":
             if self.M < 2:
                 raise ValueError("FHSS requires M >= 2")
+        elif self.modulation in ("LFM", "FMCW"):
+            if self.M < 2:
+                raise ValueError(f"{self.modulation} requires M >= 2")
+        elif self.modulation == "Barker":
+            # M maps to nearest valid Barker length (2,3,4,5,7,11,13)
+            if self.M < 2:
+                raise ValueError("Barker requires M >= 2")
+        elif self.modulation in ("WiFi", "LTE", "5G_NR"):
+            # Standards waveforms — M is unused by the MATLAB generator
+            pass
         else:
             raise ValueError(f"Unknown modulation: {self.modulation}")
 

@@ -9,6 +9,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc, roc_auc_score
 import torch
+from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 
 
 def _mpl_theme():
@@ -56,6 +57,7 @@ class InferenceResultsTab(QWidget):
         self._roc_data = None
         
         self.setup_ui()
+        install_wheel_blocker(self)
     
     def changeEvent(self, event):
         if event.type() == QEvent.Type.PaletteChange:

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PySide6.QtCore import Qt
 
 from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
+from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 import numpy as np
 from datetime import datetime
 
@@ -18,19 +19,28 @@ class QuickTestDataDialog(QDialog):
         self.setMinimumWidth(400)
         self.setMinimumHeight(250)
         
-        self.modulations_available = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
+        self.modulations_available = ["PAM", "QAM", "PSK", "FSK", "FHSS",
+                                      "LFM", "Barker", "FMCW",
+                                      "WiFi", "LTE", "5G_NR"]
         self.selected_modulations = set(self.modulations_available)  # All selected by default
-        
+
         # M values for minimal test: just 1-2 M values per modulation
         self.test_m_values = {
-            "PAM":  [4],
-            "QAM":  [16],
-            "PSK":  [4],
-            "FSK":  [2],
-            "FHSS": [8],
+            "PAM":    [4],
+            "QAM":    [16],
+            "PSK":    [4],
+            "FSK":    [2],
+            "FHSS":   [8],
+            "LFM":    [4],
+            "Barker": [7],
+            "FMCW":   [4],
+            "WiFi":   [4],
+            "LTE":    [4],
+            "5G_NR":  [4],
         }
         
         self.setup_ui()
+        install_wheel_blocker(self)
     
     def setup_ui(self):
         """Create minimal configuration UI."""
@@ -100,30 +110,49 @@ class BatchGenerationConfigDialog(QDialog):
         self.setMinimumHeight(500)
         
         self.global_params = global_params
-        self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
-        
+        self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS",
+                            "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR"]
+
         # Default M values for each modulation
         self.default_m_values = {
-            "PAM":  [2, 4, 8, 16],
-            "QAM":  [4, 16, 64],
-            "PSK":  [2, 4, 8],
-            "FSK":  [2, 4, 8],
-            "FHSS": [4, 8, 16],
+            "PAM":    [2, 4, 8, 16],
+            "QAM":    [4, 16, 64],
+            "PSK":    [2, 4, 8],
+            "FSK":    [2, 4, 8],
+            "FHSS":   [4, 8, 16],
+            "LFM":    [2, 4, 8],
+            "Barker": [5, 7, 11, 13],
+            "FMCW":   [2, 4, 8],
+            "WiFi":   [4],
+            "LTE":    [4],
+            "5G_NR":  [4],
         }
         
+        # Sensible defaults for waveforms that need higher fs / different fc
+        self._waveform_defaults = {
+            'LFM':    {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
+            'Barker': {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 5e-5},
+            'FMCW':   {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
+            'WiFi':   {'fs_override': 40e6, 'fc_override': 10e6},
+            'LTE':    {'fs_override': 3.84e6, 'fc_override': 1e6},
+            '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 10e6},
+        }
+
         # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
         self.config = {}
         for mod in self.modulations:
+            wf_defaults = self._waveform_defaults.get(mod, {})
             self.config[mod] = {
                 'enabled': True,
                 'M_values': self.default_m_values[mod].copy(),
-                'fs_override': None,
-                'fc_override': None,
-                'Tsymb_override': None,
+                'fs_override': wf_defaults.get('fs_override', None),
+                'fc_override': wf_defaults.get('fc_override', None),
+                'Tsymb_override': wf_defaults.get('Tsymb_override', None),
                 'num_samples': 10,
             }
         
         self.setup_ui()
+        install_wheel_blocker(self)
     
     def setup_ui(self):
         """Create the configuration UI."""
@@ -199,24 +228,30 @@ class BatchGenerationConfigDialog(QDialog):
         layout.addWidget(QLabel("fs override (Hz, leave blank for global):"), row, 0)
         fs_edit = QLineEdit()
         fs_edit.setPlaceholderText("e.g., 48000")
+        if self.config[modulation]['fs_override'] is not None:
+            fs_edit.setText(str(self.config[modulation]['fs_override']))
         fs_edit.editingFinished.connect(lambda: self._parse_float(modulation, 'fs_override', fs_edit.text()))
         layout.addWidget(fs_edit, row, 1)
-        
+
         row += 1
-        
+
         # Override fc (optional)
         layout.addWidget(QLabel("fc override (Hz, leave blank for global):"), row, 0)
         fc_edit = QLineEdit()
         fc_edit.setPlaceholderText("e.g., 6000")
+        if self.config[modulation]['fc_override'] is not None:
+            fc_edit.setText(str(self.config[modulation]['fc_override']))
         fc_edit.editingFinished.connect(lambda: self._parse_float(modulation, 'fc_override', fc_edit.text()))
         layout.addWidget(fc_edit, row, 1)
-        
+
         row += 1
-        
+
         # Override Tsymb (optional)
         layout.addWidget(QLabel("Tsymb override (seconds, leave blank for global):"), row, 0)
         tsymb_edit = QLineEdit()
         tsymb_edit.setPlaceholderText("e.g., 0.001")
+        if self.config[modulation]['Tsymb_override'] is not None:
+            tsymb_edit.setText(str(self.config[modulation]['Tsymb_override']))
         tsymb_edit.editingFinished.connect(lambda: self._parse_float(modulation, 'Tsymb_override', tsymb_edit.text()))
         layout.addWidget(tsymb_edit, row, 1)
         
@@ -275,6 +310,7 @@ class WaveformSelectionTab(QWidget):
         self.current_baseband_symbols = None
         
         self.setup_ui()
+        install_wheel_blocker(self)
     
     def setup_ui(self):
         """Initialize the UI components"""
@@ -302,7 +338,9 @@ class WaveformSelectionTab(QWidget):
         # Waveform (Modulation Type)
         layout.addWidget(QLabel("Waveform"))
         self.waveform_combo = QComboBox()
-        self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS"])
+        self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
+                                          "LFM", "Barker", "FMCW",
+                                          "WiFi", "LTE", "5G_NR"])
         layout.addWidget(self.waveform_combo)
 
         # fs
@@ -619,8 +657,8 @@ class WaveformSelectionTab(QWidget):
             return  # User cancelled
         
         batch_config = dialog.get_config()
-        
-        modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
+
+        modulations = list(batch_config.keys())
         from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)
 

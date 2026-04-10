@@ -20,10 +20,16 @@ class MATLABWaveformGenerator:
         if self.matlab_engine is None or not getattr(self.matlab_engine, 'is_available', lambda: False)():
             raise RuntimeError("MATLAB engine is not available. Install/configure MATLAB and the MATLAB Engine for Python, or start the engine before generating waveforms.")
 
+        from mixedsignal_gui.backend.core import WaveformConfig
+
         eng = self.matlab_engine.eng
         self.last_metadata = {}
 
-        if cfg.modulation in {"QAM", "PSK"}:
+        # Modulations that return symbols as a second output
+        symbol_mods = {"PAM", "QAM", "PSK"}
+        has_symbols = cfg.modulation in symbol_mods
+
+        if has_symbols:
             data, symbols = eng.waveform_generator(
                 float(cfg.output_len),
                 float(cfg.fs),

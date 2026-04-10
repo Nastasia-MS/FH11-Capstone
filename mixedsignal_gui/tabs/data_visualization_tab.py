@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 
 
 # ─────────────────────────────────────────────
@@ -299,6 +300,7 @@ class DataVisualizationTab(QWidget):
         self._labels      = None
         self._class_names = []
         self._setup_ui()
+        install_wheel_blocker(self)
 
     # ── UI construction ──────────────────────────────────────────────
     def _setup_ui(self):

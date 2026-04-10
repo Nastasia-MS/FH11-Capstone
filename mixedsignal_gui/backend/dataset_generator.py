@@ -108,14 +108,14 @@ class DatasetGeneratorThread(QThread):
 
         params['modulation'] = modulation
 
-        # FSK specific
+        # FSK specific — default freq_sep matches MATLAB's 1/Tsymb
         if modulation == 'FSK':
-            params['freq_sep'] = float(params.get('freq_sep', 1000))
+            params['freq_sep'] = float(params.get('freq_sep', 1.0 / params['Tsymb']))
 
         return params
 
     def run(self):
-        from backend.core import Waveform
+        from mixedsignal_gui.backend.core import Waveform
 
         total = self.samples_per_class * len(self.modulations)
         count = 0
@@ -139,7 +139,7 @@ class DatasetGeneratorThread(QThread):
                         M=params['M'],
                         modulation=params['modulation'],
                         var=params.get('var'),
-                        eng=self.matlab_engine,
+                        matlab_engine=self.matlab_engine,
                         alpha=params.get('alpha', 0.35),
                         span=params.get('span', 8),
                         pulse_shape=params.get('pulse_shape', 'rrc'),
