@@ -33,6 +33,42 @@ def _apply_mpl_theme(fig, *axes):
             leg.get_frame().set_facecolor(axes_bg)
             for text in leg.get_texts():
                 text.set_color(fg)
+
+
+def _ideal_constellation_points(modulation, M):
+    """Return ideal constellation points for common symbol modulations."""
+    M = int(M) if M is not None else 2
+
+    if modulation == "PAM":
+        levels = np.arange(-(M - 1), M, 2, dtype=float)
+        scale = np.sqrt(np.mean(levels ** 2)) if len(levels) else 1.0
+        return levels / max(scale, 1e-12)
+
+    if modulation == "PSK":
+        return np.exp(1j * (2 * np.pi * np.arange(M) / M))
+
+    if modulation == "QAM":
+        side = int(np.sqrt(M))
+        if side * side != M:
+            side = max(2, side)
+        levels = np.arange(-(side - 1), side, 2, dtype=float)
+        grid = np.array([x + 1j * y for y in levels for x in levels], dtype=np.complex128)
+        scale = np.sqrt(np.mean(np.abs(grid) ** 2)) if len(grid) else 1.0
+        return grid / max(scale, 1e-12)
+
+    return np.array([], dtype=np.complex128)
+
+
+def _snap_to_constellation(symbols, modulation, M):
+    """Snap recovered symbols to the nearest ideal constellation points."""
+    ideal = _ideal_constellation_points(modulation, M)
+    if len(symbols) == 0 or len(ideal) == 0:
+        return np.asarray(symbols)
+
+    symbols = np.asarray(symbols, dtype=np.complex128).reshape(-1)
+    distances = np.abs(symbols[:, None] - ideal[None, :])
+    nearest = np.argmin(distances, axis=1)
+    return ideal[nearest]
     
     # Handle colorbars
     for ax in fig.get_axes():
@@ -224,13 +260,15 @@ class IQDomainPlot(PlottingWidget):
         """Plot constellation using matched filter demodulation."""
         M = int(M)
 
-        if modulation in {"QAM", "PSK"} and baseband_symbols is not None and len(baseband_symbols) > 0:
+        if modulation in {"PAM", "QAM", "PSK"} and baseband_symbols is not None and len(baseband_symbols) > 0:
             rxRecovered = np.asarray(baseband_symbols).flatten()
         else:
             rxRecovered = demodulate_to_symbols(
                 data, fs, fc, int(sps), alpha=alpha, span=int(span),
                 pulse_shape=pulse_shape, nsymb=nsymb,
             )
+
+        rxRecovered = _snap_to_constellation(rxRecovered, modulation, M)
 
         I_symbols = np.real(rxRecovered)
         Q_symbols = np.imag(rxRecovered)
@@ -239,7 +277,7 @@ class IQDomainPlot(PlottingWidget):
         ax.set_xlabel('In-phase (I)')
         ax.set_ylabel('Quadrature (Q)')
         ax.set_title(f"{M}-{modulation} Constellation Diagram")
-        ax.axis('equal')
+        ax.set_aspect('equal', adjustable='datalim')
         ax.grid(True, alpha=0.3)
         ax.axhline(y=0, color='k', linewidth=0.5, alpha=0.3)
         ax.axvline(x=0, color='k', linewidth=0.5, alpha=0.3)
@@ -403,18 +441,32 @@ class SpectrogramPlot(PlottingWidget):
                    "vmin_pct": 5, "vmax_pct": 95}
         
         presets = {
-            "PAM": {"nperseg": 512, "overlap": 0.70, "window": "hann", 
-                    "vmin_pct": 10, "vmax_pct": 95},
-            "QAM": {"nperseg": 1024, "overlap": 0.75, "window": "hann", 
-                    "vmin_pct": 5, "vmax_pct": 95},
-            "PSK": {"nperseg": 1024, "overlap": 0.75, "window": "hann", 
-                    "vmin_pct": 5, "vmax_pct": 95},
-            "ASK": {"nperseg": 512, "overlap": 0.70, "window": "hann", 
-                    "vmin_pct": 10, "vmax_pct": 95},
-            "FSK": {"nperseg": 2048, "overlap": 0.85, "window": "blackman", 
-                    "vmin_pct": 3, "vmax_pct": 97},
-            "OFDM": {"nperseg": 2048, "overlap": 0.80, "window": "hann", 
-                     "vmin_pct": 5, "vmax_pct": 90}
+            "PAM":    {"nperseg": 512,  "overlap": 0.70, "window": "hann",
+                       "vmin_pct": 10, "vmax_pct": 95},
+            "QAM":    {"nperseg": 1024, "overlap": 0.75, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 95},
+            "PSK":    {"nperseg": 1024, "overlap": 0.75, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 95},
+            "ASK":    {"nperseg": 512,  "overlap": 0.70, "window": "hann",
+                       "vmin_pct": 10, "vmax_pct": 95},
+            "FSK":    {"nperseg": 2048, "overlap": 0.85, "window": "blackman",
+                       "vmin_pct": 3,  "vmax_pct": 97},
+            "FHSS":   {"nperseg": 2048, "overlap": 0.85, "window": "blackman",
+                       "vmin_pct": 3,  "vmax_pct": 97},
+            "OFDM":   {"nperseg": 2048, "overlap": 0.80, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 90},
+            "LFM":    {"nperseg": 2048, "overlap": 0.85, "window": "hann",
+                       "vmin_pct": 3,  "vmax_pct": 97},
+            "Barker": {"nperseg": 1024, "overlap": 0.80, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 95},
+            "FMCW":   {"nperseg": 2048, "overlap": 0.85, "window": "hann",
+                       "vmin_pct": 3,  "vmax_pct": 97},
+            "WiFi":   {"nperseg": 2048, "overlap": 0.80, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 90},
+            "LTE":    {"nperseg": 2048, "overlap": 0.80, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 90},
+            "5G_NR":  {"nperseg": 2048, "overlap": 0.80, "window": "hann",
+                       "vmin_pct": 5,  "vmax_pct": 90},
         }
         
         return presets.get(self.current_modulation, default)

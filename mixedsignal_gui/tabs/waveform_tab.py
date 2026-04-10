@@ -508,7 +508,7 @@ class WaveformSelectionTab(QWidget):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(24, 24, 24, 24)
-        
+
         self.plot_tabs = QTabWidget()
         self.waveform_plot = PlottingWidget()
         self.freq_plot = FreqDomainPlot()
@@ -530,9 +530,9 @@ class WaveformSelectionTab(QWidget):
 
         data = self.current_data
         fs = self.current_fs
+        sps = int(fs * self.Tsymb)
 
         t = np.arange(len(data)) / fs * 1e6
-        sps = int(fs * self.Tsymb)
 
         # Time domain: for complex data plot I and Q; for real plot as-is
         if np.iscomplexobj(data):

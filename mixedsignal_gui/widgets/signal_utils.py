@@ -73,41 +73,72 @@ def demodulate_to_symbols(data, fs, fc, sps, alpha=0.35, span=8,
     symbols : 1-D complex ndarray
         Demodulated, normalised symbol array.
     """
-    sps = int(sps)
+    sps = int(round(sps))
     span = int(span)
 
+    # ------------------------------------------------------------------
+    # Step 1 — down-convert to complex baseband
+    # ------------------------------------------------------------------
     if np.iscomplexobj(data):
-        complex_baseband = data
+        complex_baseband = np.asarray(data).ravel()
     else:
         t = np.arange(len(data)) / fs
-        complex_baseband = data * np.exp(-1j * 2 * np.pi * fc * t)
+        bb_raw = data * np.exp(-1j * 2 * np.pi * fc * t)
 
+        # Low-pass filter to remove the image at 2·fc before matched
+        # filtering.  Use zero-phase (forward-backward) filtering so
+        # the group delay of the LPF does not shift the symbol timing.
+        sig_bw = (1.0 + alpha) * (fs / sps) / 2.0   # one-sided BW
+        lpf_cut = min(max(sig_bw * 2.0, fs / sps), fs / 2.0 * 0.9)
+        sos = signal.butter(5, lpf_cut, 'low', fs=fs, output='sos')
+        complex_baseband = 2.0 * signal.sosfiltfilt(sos, bb_raw)
+
+    # ------------------------------------------------------------------
+    # Step 2 — matched filter / detection
+    # ------------------------------------------------------------------
     if pulse_shape == 'rrc':
         h = rcosdesign(alpha, span, sps)
         rx_filtered = np.convolve(complex_baseband, h, mode='full')
-        rx_filtered = 2.0 * rx_filtered
 
-        total_delay = span * sps
-        rx_sampled = rx_filtered[total_delay::sps]
+        # The RX RRC matched-filter group delay.  The TX already
+        # trimmed its own filter delay, so the only delay we need to
+        # compensate is the RX filter's group delay = (len(h)-1)/2.
+        rx_delay = (len(h) - 1) // 2          # = span * sps // 2
 
+        rx_sampled = rx_filtered[rx_delay::sps]
+
+        # Trim edge symbols affected by filter transients
         if nsymb is not None:
-            skip = int(span)
-            start = skip
-            end = int(min(nsymb - skip, len(rx_sampled) - skip))
-            if end > start:
-                rx_recovered = rx_sampled[start:end]
+            skip = max(span // 2, 2)
+            end_idx = min(len(rx_sampled), nsymb) - skip
+            if end_idx > skip:
+                rx_recovered = rx_sampled[skip:end_idx]
             else:
-                rx_recovered = rx_sampled[:int(nsymb)]
+                rx_recovered = rx_sampled
         else:
-            rx_recovered = rx_sampled
+            # No nsymb — just drop the first and last *span* symbols
+            drop = span
+            if len(rx_sampled) > 2 * drop:
+                rx_recovered = rx_sampled[drop:-drop]
+            else:
+                rx_recovered = rx_sampled
     else:
+        # Rectangular pulse — simple LPF + down-sample
         symbol_rate = fs / sps
         cutoff = symbol_rate / 2.0 * 0.8
         sos = signal.butter(6, cutoff, 'low', fs=fs, output='sos')
-        filtered = 2.0 * signal.sosfilt(sos, complex_baseband)
+        if np.iscomplexobj(data):
+            # Baseband input — needs its own 2× gain (passband path
+            # already applied 2× above).
+            filtered = 2.0 * signal.sosfilt(sos, complex_baseband)
+        else:
+            filtered = signal.sosfilt(sos, complex_baseband)
         offset = sps // 2
         rx_recovered = filtered[offset::sps]
 
+    # ------------------------------------------------------------------
+    # Step 3 — normalise to unit average power
+    # ------------------------------------------------------------------
     avg_power = np.mean(np.abs(rx_recovered) ** 2)
     if avg_power > 0:
         rx_recovered = rx_recovered / np.sqrt(avg_power)

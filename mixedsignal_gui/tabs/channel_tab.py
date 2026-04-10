@@ -233,15 +233,24 @@ class ChannelNoiseTab(QWidget):
         awgn_header.addStretch()
         self.awgn_toggle = ToggleSwitch()
         self.awgn_toggle.setChecked(self.awgn_enabled)
-        self.awgn_toggle.toggled.connect(lambda checked: setattr(self, 'awgn_enabled', checked))
         awgn_header.addWidget(self.awgn_toggle)
         layout.addLayout(awgn_header)
 
-        # SNR Slider
+        # SNR Slider — wrapped so we can grey-out when toggle is off
+        self.awgn_controls = QWidget()
+        awgn_ctrl_layout = QVBoxLayout(self.awgn_controls)
+        awgn_ctrl_layout.setContentsMargins(0, 0, 0, 0)
         snr_slider_layout = self.create_slider_control(
             "SNR (dB)", self.snr_db, "dB", -10, 40, "snr_db"
         )
-        layout.addLayout(snr_slider_layout)
+        awgn_ctrl_layout.addLayout(snr_slider_layout)
+        self.awgn_controls.setEnabled(self.awgn_enabled)
+        layout.addWidget(self.awgn_controls)
+
+        def _on_awgn_toggled(checked):
+            self.awgn_enabled = checked
+            self.awgn_controls.setEnabled(checked)
+        self.awgn_toggle.toggled.connect(_on_awgn_toggled)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -261,29 +270,39 @@ class ChannelNoiseTab(QWidget):
         amp_phase_header.addStretch()
         self.amp_phase_toggle = ToggleSwitch()
         self.amp_phase_toggle.setChecked(self.amp_phase_enabled)
-        self.amp_phase_toggle.toggled.connect(lambda checked: setattr(self, 'amp_phase_enabled', checked))
         amp_phase_header.addWidget(self.amp_phase_toggle)
         layout.addLayout(amp_phase_header)
 
-        # Amplitude Control
+        # Amp/Phase controls — wrapped so we can grey-out when toggle is off
+        self.amp_phase_controls = QWidget()
+        ap_ctrl_layout = QVBoxLayout(self.amp_phase_controls)
+        ap_ctrl_layout.setContentsMargins(0, 0, 0, 0)
+
         amp_label = QLabel("Amplitude Scaling")
-        layout.addWidget(amp_label)
+        ap_ctrl_layout.addWidget(amp_label)
         self.amplitude_spin = QDoubleSpinBox()
         self.amplitude_spin.setRange(0.0, 5.0)
         self.amplitude_spin.setSingleStep(0.1)
         self.amplitude_spin.setValue(self.amplitude)
         self.amplitude_spin.valueChanged.connect(lambda v: setattr(self, 'amplitude', v))
-        layout.addWidget(self.amplitude_spin)
+        ap_ctrl_layout.addWidget(self.amplitude_spin)
 
-        # Phase Control
         phase_label = QLabel("Phase Shift (degrees)")
-        layout.addWidget(phase_label)
+        ap_ctrl_layout.addWidget(phase_label)
         self.phase_spin = QDoubleSpinBox()
         self.phase_spin.setRange(-180.0, 180.0)
         self.phase_spin.setSingleStep(5.0)
         self.phase_spin.setValue(self.phase_deg)
         self.phase_spin.valueChanged.connect(lambda v: setattr(self, 'phase_deg', v))
-        layout.addWidget(self.phase_spin)
+        ap_ctrl_layout.addWidget(self.phase_spin)
+
+        self.amp_phase_controls.setEnabled(self.amp_phase_enabled)
+        layout.addWidget(self.amp_phase_controls)
+
+        def _on_amp_phase_toggled(checked):
+            self.amp_phase_enabled = checked
+            self.amp_phase_controls.setEnabled(checked)
+        self.amp_phase_toggle.toggled.connect(_on_amp_phase_toggled)
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
@@ -303,19 +322,31 @@ class ChannelNoiseTab(QWidget):
         freq_shift_header.addStretch()
         self.freq_shift_toggle = ToggleSwitch()
         self.freq_shift_toggle.setChecked(self.freq_shift_enabled)
-        self.freq_shift_toggle.toggled.connect(lambda checked: setattr(self, 'freq_shift_enabled', checked))
         freq_shift_header.addWidget(self.freq_shift_toggle)
         layout.addLayout(freq_shift_header)
 
+        # Freq-shift controls — wrapped so we can grey-out when toggle is off
+        self.freq_shift_controls = QWidget()
+        fs_ctrl_layout = QVBoxLayout(self.freq_shift_controls)
+        fs_ctrl_layout.setContentsMargins(0, 0, 0, 0)
+
         freq_shift_label = QLabel("Frequency Offset (MHz)")
-        layout.addWidget(freq_shift_label)
+        fs_ctrl_layout.addWidget(freq_shift_label)
         self.freq_shift_spin = QDoubleSpinBox()
         self.freq_shift_spin.setRange(-100.0, 100.0)
         self.freq_shift_spin.setSingleStep(0.01)
         self.freq_shift_spin.setDecimals(4)
         self.freq_shift_spin.setValue(self.freq_shift_hz / 1e6)
         self.freq_shift_spin.valueChanged.connect(lambda v: setattr(self, 'freq_shift_hz', v * 1e6))
-        layout.addWidget(self.freq_shift_spin)
+        fs_ctrl_layout.addWidget(self.freq_shift_spin)
+
+        self.freq_shift_controls.setEnabled(self.freq_shift_enabled)
+        layout.addWidget(self.freq_shift_controls)
+
+        def _on_freq_shift_toggled(checked):
+            self.freq_shift_enabled = checked
+            self.freq_shift_controls.setEnabled(checked)
+        self.freq_shift_toggle.toggled.connect(_on_freq_shift_toggled)
 
         return page
 

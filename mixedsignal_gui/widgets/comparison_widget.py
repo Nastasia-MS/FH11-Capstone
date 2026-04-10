@@ -18,15 +18,79 @@ import matplotlib.pyplot as plt
 from mixedsignal_gui.widgets.signal_utils import demodulate_to_symbols, extract_fsk_iq, extract_fhss_iq
 
 
+def _hilbert_iq(x, fs, fc):
+    """Extract I/Q via Hilbert-transform downconversion.
+
+    Works for any real passband signal regardless of modulation:
+    multiply by exp(-j*2*pi*fc*t) to shift to baseband, then
+    low-pass by keeping only the analytic (positive-freq) part.
+    Returns decimated I and Q arrays suitable for scatter plots.
+    """
+    x = np.asarray(x).ravel().astype(np.float64)
+    t = np.arange(len(x)) / fs
+    # Downconvert
+    analytic = signal.hilbert(x)
+    bb = analytic * np.exp(-1j * 2 * np.pi * fc * t)
+    # Decimate for plotting (every 4th sample keeps plot fast)
+    step = max(1, len(bb) // 4096)
+    bb = bb[::step]
+    return bb.real, bb.imag
+
+
+def _ideal_constellation_points(modulation, M):
+    """Return ideal constellation points for common symbol modulations."""
+    M = int(M) if M is not None else 2
+
+    if modulation == 'PAM':
+        levels = np.arange(-(M - 1), M, 2, dtype=float)
+        scale = np.sqrt(np.mean(levels ** 2)) if len(levels) else 1.0
+        return levels / max(scale, 1e-12)
+
+    if modulation == 'PSK':
+        phases = 2 * np.pi * np.arange(M) / M
+        return np.exp(1j * phases)
+
+    if modulation == 'QAM':
+        side = int(np.sqrt(M))
+        if side * side != M:
+            side = max(2, side)
+        levels = np.arange(-(side - 1), side, 2, dtype=float)
+        grid = np.array([x + 1j * y for y in levels for x in levels], dtype=np.complex128)
+        scale = np.sqrt(np.mean(np.abs(grid) ** 2)) if len(grid) else 1.0
+        return grid / max(scale, 1e-12)
+
+    return np.array([], dtype=np.complex128)
+
+
+def _snap_to_constellation(symbols, modulation, M):
+    """Snap recovered symbols to the nearest ideal constellation points."""
+    ideal = _ideal_constellation_points(modulation, M)
+    if len(symbols) == 0 or len(ideal) == 0:
+        return np.asarray(symbols)
+
+    symbols = np.asarray(symbols, dtype=np.complex128).reshape(-1)
+    distances = np.abs(symbols[:, None] - ideal[None, :])
+    nearest = np.argmin(distances, axis=1)
+    return ideal[nearest]
+
+
 # Modulation-aware spectrogram presets
 _SPECTROGRAM_PRESETS = {
-    "PAM":  {"nperseg": 512,  "overlap": 0.70, "window": "hann",     "vmin_pct": 10, "vmax_pct": 95},
-    "QAM":  {"nperseg": 1024, "overlap": 0.75, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 95},
-    "PSK":  {"nperseg": 1024, "overlap": 0.75, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 95},
-    "ASK":  {"nperseg": 512,  "overlap": 0.70, "window": "hann",     "vmin_pct": 10, "vmax_pct": 95},
-    "FSK":  {"nperseg": 2048, "overlap": 0.85, "window": "blackman", "vmin_pct": 3,  "vmax_pct": 97},
-    "OFDM": {"nperseg": 2048, "overlap": 0.80, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 90},
-    "FHSS": {"nperseg": 2048, "overlap": 0.85, "window": "blackman", "vmin_pct": 3,  "vmax_pct": 97},
+    "PAM":    {"nperseg": 512,  "overlap": 0.70, "window": "hann",     "vmin_pct": 10, "vmax_pct": 95},
+    "QAM":    {"nperseg": 1024, "overlap": 0.75, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 95},
+    "PSK":    {"nperseg": 1024, "overlap": 0.75, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 95},
+    "ASK":    {"nperseg": 512,  "overlap": 0.70, "window": "hann",     "vmin_pct": 10, "vmax_pct": 95},
+    "FSK":    {"nperseg": 2048, "overlap": 0.85, "window": "blackman", "vmin_pct": 3,  "vmax_pct": 97},
+    "OFDM":   {"nperseg": 2048, "overlap": 0.80, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 90},
+    "FHSS":   {"nperseg": 2048, "overlap": 0.85, "window": "blackman", "vmin_pct": 3,  "vmax_pct": 97},
+    # Radar waveforms — wideband chirps benefit from large windows + high overlap
+    "LFM":    {"nperseg": 2048, "overlap": 0.85, "window": "hann",     "vmin_pct": 3,  "vmax_pct": 97},
+    "Barker": {"nperseg": 1024, "overlap": 0.80, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 95},
+    "FMCW":   {"nperseg": 2048, "overlap": 0.85, "window": "hann",     "vmin_pct": 3,  "vmax_pct": 97},
+    # Standards waveforms — OFDM-based, use matching presets
+    "WiFi":   {"nperseg": 2048, "overlap": 0.80, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 90},
+    "LTE":    {"nperseg": 2048, "overlap": 0.80, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 90},
+    "5G_NR":  {"nperseg": 2048, "overlap": 0.80, "window": "hann",     "vmin_pct": 5,  "vmax_pct": 90},
 }
 _DEFAULT_PRESET = {"nperseg": 1024, "overlap": 0.75, "window": "hann", "vmin_pct": 5, "vmax_pct": 95}
 
@@ -367,31 +431,49 @@ class ComparisonWidget(QWidget):
 
         sps = int(sps)
 
-        try:
-            if modulation == 'FSK':
-                if M is None:
-                    M = 4
-                I_c, Q_c = extract_fsk_iq(clean, fs, fc, sps, M)
-                I_a, Q_a = extract_fsk_iq(augmented, fs, fc, sps, M)
-                ax.scatter(I_c, Q_c, c='blue', s=8, alpha=0.4, label='Clean')
-                ax.scatter(I_a, Q_a, c='red', s=8, alpha=0.25, label='Augmented')
-                ax.set_title(f'{int(M)}-FSK IQ Trajectory: Clean vs Augmented')
+        # Modulations that use IQ trajectory (no symbol demod)
+        _IQ_TRAJECTORY_MODS = {'FSK', 'FHSS', 'LFM', 'Barker', 'FMCW', 'WiFi', 'LTE', '5G_NR'}
 
-            elif modulation == 'FHSS':
-                if M is None:
-                    M = 4
-                I_c, Q_c = extract_fhss_iq(clean, fs, fc, sps, M)
-                I_a, Q_a = extract_fhss_iq(augmented, fs, fc, sps, M)
+        try:
+            if modulation in _IQ_TRAJECTORY_MODS:
+                # IQ trajectory via analytic signal (Hilbert transform)
+                if modulation == 'FSK':
+                    if M is None:
+                        M = 4
+                    I_c, Q_c = extract_fsk_iq(clean, fs, fc, sps, M)
+                    I_a, Q_a = extract_fsk_iq(augmented, fs, fc, sps, M)
+                    title_str = f'{int(M)}-FSK IQ Trajectory'
+                elif modulation == 'FHSS':
+                    if M is None:
+                        M = 4
+                    I_c, Q_c = extract_fhss_iq(clean, fs, fc, sps, M)
+                    I_a, Q_a = extract_fhss_iq(augmented, fs, fc, sps, M)
+                    title_str = 'FHSS IQ Trajectory'
+                else:
+                    # Generic IQ via Hilbert downconversion for radar/standards
+                    I_c, Q_c = _hilbert_iq(clean, fs, fc)
+                    I_a, Q_a = _hilbert_iq(augmented, fs, fc)
+                    title_str = f'{modulation} IQ Trajectory'
+
                 ax.scatter(I_c, Q_c, c='blue', s=8, alpha=0.4, label='Clean')
                 ax.scatter(I_a, Q_a, c='red', s=8, alpha=0.25, label='Augmented')
-                ax.set_title(f'FHSS IQ Trajectory: Clean vs Augmented')
+                ax.set_title(f'{title_str}: Clean vs Augmented')
 
             else:
                 # PAM / QAM / PSK — matched-filter demodulation
-                sym_clean = demodulate_to_symbols(
-                    clean, fs, fc, sps, alpha=alpha, span=span,
-                    pulse_shape=pulse_shape, nsymb=nsymb,
-                )
+                sym_clean = None
+                if modulation in {'PAM', 'QAM', 'PSK'}:
+                    baseband_clean = self._last_plot_args.get('baseband_symbols') if hasattr(self, '_last_plot_args') else None
+                    if baseband_clean is not None and len(np.asarray(baseband_clean).reshape(-1)) > 0:
+                        sym_clean = np.asarray(baseband_clean).reshape(-1)
+
+                if sym_clean is None:
+                    sym_clean = demodulate_to_symbols(
+                        clean, fs, fc, sps, alpha=alpha, span=span,
+                        pulse_shape=pulse_shape, nsymb=nsymb,
+                    )
+
+                sym_clean = _snap_to_constellation(sym_clean, modulation, M)
                 sym_aug = demodulate_to_symbols(
                     augmented, fs, fc, sps, alpha=alpha, span=span,
                     pulse_shape=pulse_shape, nsymb=nsymb,
@@ -416,6 +498,19 @@ class ComparisonWidget(QWidget):
         ax.set_ylabel('Quadrature (Q)')
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
-        ax.set_aspect('equal')
         ax.axhline(y=0, color='k', linewidth=0.5, alpha=0.3)
         ax.axvline(x=0, color='k', linewidth=0.5, alpha=0.3)
+
+        # Fixed axis limits derived from the clean constellation extent
+        # so the scale stays locked as the user sweeps the SNR slider.
+        # 50 % margin gives room for noise to visibly spread outward.
+        if modulation in _IQ_TRAJECTORY_MODS:
+            all_I = np.concatenate([I_c, I_a])
+            all_Q = np.concatenate([Q_c, Q_a])
+        else:
+            all_I = np.real(sym_clean)
+            all_Q = np.imag(sym_clean)
+        half = max(np.max(np.abs(all_I)), np.max(np.abs(all_Q)), 0.1) * 1.5
+        ax.set_xlim(-half, half)
+        ax.set_ylim(-half, half)
+        ax.set_aspect('equal')
