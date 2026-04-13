@@ -131,6 +131,15 @@ class BatchGenerationConfigDialog(QDialog):
         
         layout.addWidget(QLabel("Configure per-modulation parameters for batch generation"))
         
+        # Output type selector
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Output type:"))
+        self._output_type_combo = QComboBox()
+        self._output_type_combo.addItems(["Passband (Real)", "Baseband (Complex IQ)"])
+        output_row.addWidget(self._output_type_combo)
+        output_row.addStretch()
+        layout.addLayout(output_row)
+        
         # Scroll area for modulation configs
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -247,7 +256,10 @@ class BatchGenerationConfigDialog(QDialog):
     
     def get_config(self):
         """Return the configured parameters."""
-        return self.config
+        return {
+            **self.config,
+            "_output_type": "passband" if self._output_type_combo.currentIndex() == 0 else "baseband",
+        }
 
 
 class WaveformSelectionTab(QWidget):
@@ -619,6 +631,7 @@ class WaveformSelectionTab(QWidget):
             return  # User cancelled
         
         batch_config = dialog.get_config()
+        output_type = batch_config.pop("_output_type", "passband")
         
         modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS"]
         from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
@@ -664,6 +677,7 @@ class WaveformSelectionTab(QWidget):
                             alpha=self.alpha,
                             span=self.span,
                             pulse_shape=self.pulse_shape_combo.currentText(),
+                            output_type=output_type,
                         )
                         data = result["signal"]
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -687,6 +701,7 @@ class WaveformSelectionTab(QWidget):
                             "alpha":       self.alpha,
                             "span":        self.span,
                             "pulse_shape": self.pulse_shape_combo.currentText(),
+                            "output_type": output_type,
                             "timestamp":   timestamp,
                         }
 
