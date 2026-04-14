@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QComboBox, QFrame, QFileDialog,
-                               QDoubleSpinBox, QSpinBox, QScrollArea, QMessageBox)
+                               QDoubleSpinBox, QSpinBox, QScrollArea, QMessageBox,
+                               QTabWidget, QSlider)
 from PySide6.QtCore import Qt, QSettings
 import os
 import json
@@ -9,9 +10,13 @@ import torch
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
-from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
+from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot, _theme_toolbar
+from mixedsignal_gui.widgets.toggle_switch import ToggleSwitch
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
+from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
+                                  ScalarAmplitudeAndPhaseShift, FrequencyShift)
 
 # Must stay in sync with trainer.py
 IQ_MODELS = {'ResNet1DOptimized'}
@@ -48,15 +53,17 @@ class EvaluateModelTab(QWidget):
         self.model_metadata = None
         self.class_labels = []
 
-        # Waveform defaults
-        self.fs = 48000
-        self.Tsymb = 0.001
-        self.fc = 6000
-        self.M = 16
+        # Waveform defaults (match Waveform Selection tab)
+        self.fc = 1e6       # Hz
+        self.fs = 8e6       # Hz
         self.var = 1.0
-        self.Nsymb = 2048
         self.alpha = 0.35
-        self.span = 8
+        self.Tsymb = 1e-6   # seconds
+        self.M = 4
+        self.Nsymb = 256
+        self.span = 10
+
+        self.output_type = "passband"
 
         self._last_signal = None
         self._last_modulation = None
@@ -69,17 +76,31 @@ class EvaluateModelTab(QWidget):
     # ------------------------------------------------------------------
 
     def setup_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # Left: config panel
-        left = self._create_config_panel()
-        layout.addWidget(left, 1)
+        self.page_tabs = QTabWidget()
 
-        # Right: plots + classification result
-        right = self._create_results_panel()
-        layout.addWidget(right, 2)
+        # ── Page 1: Generate & Classify ──────────────────────────────────
+        gen_page = QWidget()
+        gen_layout = QHBoxLayout(gen_page)
+        gen_layout.setContentsMargins(0, 0, 0, 0)
+        gen_layout.setSpacing(10)
+        gen_layout.addWidget(self._create_config_panel(), 1)
+        gen_layout.addWidget(self._create_gen_results_panel(), 2)
+        self.page_tabs.addTab(gen_page, "Generate && Classify")
+
+        # ── Page 2: Channel Test ─────────────────────────────────────────
+        chan_page = QWidget()
+        chan_layout = QHBoxLayout(chan_page)
+        chan_layout.setContentsMargins(0, 0, 0, 0)
+        chan_layout.setSpacing(10)
+        chan_layout.addWidget(self._create_channel_controls_panel(), 1)
+        chan_layout.addWidget(self._create_channel_results_panel(), 2)
+        self.page_tabs.addTab(chan_page, "Channel Test")
+
+        root.addWidget(self.page_tabs)
 
     def _create_config_panel(self):
         inner = QWidget()
@@ -124,22 +145,21 @@ class EvaluateModelTab(QWidget):
         self.waveform_combo.currentTextChanged.connect(self._on_waveform_changed)
         layout.addWidget(self.waveform_combo)
 
-        layout.addWidget(QLabel("Sampling Frequency fs (Hz)"))
+        # fs — display in MHz, store in Hz (matches Waveform Selection tab)
+        layout.addWidget(QLabel("Sampling Frequency fs (MHz)"))
         self.fs_spin = QDoubleSpinBox()
-        self.fs_spin.setRange(1, 1e9)
-        self.fs_spin.setDecimals(0)
-        self.fs_spin.setSingleStep(1000)
-        self.fs_spin.setValue(self.fs)
-        self.fs_spin.valueChanged.connect(lambda v: setattr(self, "fs", v))
+        self.fs_spin.setRange(0.1, 1000)
+        self.fs_spin.setDecimals(2)
+        self.fs_spin.setValue(self.fs / 1e6)
+        self.fs_spin.valueChanged.connect(lambda v: setattr(self, "fs", v * 1e6))
         layout.addWidget(self.fs_spin)
 
-        layout.addWidget(QLabel("Carrier Frequency fc (Hz)"))
+        # fc — display in MHz, store in Hz
+        layout.addWidget(QLabel("Carrier Frequency fc (MHz)"))
         self.fc_spin = QDoubleSpinBox()
-        self.fc_spin.setRange(0, 1e9)
-        self.fc_spin.setDecimals(0)
-        self.fc_spin.setSingleStep(1000)
-        self.fc_spin.setValue(self.fc)
-        self.fc_spin.valueChanged.connect(lambda v: setattr(self, "fc", v))
+        self.fc_spin.setRange(0.1, 200)
+        self.fc_spin.setValue(self.fc / 1e6)
+        self.fc_spin.valueChanged.connect(lambda v: setattr(self, "fc", v * 1e6))
         layout.addWidget(self.fc_spin)
 
         layout.addWidget(QLabel("Noise Variance"))
@@ -158,13 +178,12 @@ class EvaluateModelTab(QWidget):
         self.alpha_spin.valueChanged.connect(lambda v: setattr(self, "alpha", v))
         layout.addWidget(self.alpha_spin)
 
-        layout.addWidget(QLabel("Symbol Period Tsymb (s)"))
+        # Tsymb — display in µs, store in seconds (matches Waveform Selection tab)
+        layout.addWidget(QLabel("Symbol Period Tsymb (µs)"))
         self.tsymb_spin = QDoubleSpinBox()
-        self.tsymb_spin.setRange(1e-7, 1.0)
-        self.tsymb_spin.setDecimals(6)
-        self.tsymb_spin.setSingleStep(0.0001)
-        self.tsymb_spin.setValue(self.Tsymb)
-        self.tsymb_spin.valueChanged.connect(lambda v: setattr(self, "Tsymb", v))
+        self.tsymb_spin.setRange(0.01, 100.0)
+        self.tsymb_spin.setValue(self.Tsymb * 1e6)
+        self.tsymb_spin.valueChanged.connect(lambda v: setattr(self, "Tsymb", v * 1e-6))
         layout.addWidget(self.tsymb_spin)
 
         layout.addWidget(QLabel("Modulation Order M"))
@@ -199,6 +218,15 @@ class EvaluateModelTab(QWidget):
         self.pulse_shape_combo.addItems(["rrc", "rect"])
         layout.addWidget(self.pulse_shape_combo)
 
+        # Output Type (matches Waveform Selection tab)
+        layout.addWidget(QLabel("Output Type"))
+        self.output_type_combo = QComboBox()
+        self.output_type_combo.addItems(["Passband (Real)", "Baseband (Complex IQ)"])
+        self.output_type_combo.currentIndexChanged.connect(
+            lambda idx: setattr(self, "output_type", "passband" if idx == 0 else "baseband")
+        )
+        layout.addWidget(self.output_type_combo)
+
         # --- Action buttons ---
         layout.addSpacing(8)
         self.generate_btn = QPushButton("▶ Generate & Classify")
@@ -221,7 +249,10 @@ class EvaluateModelTab(QWidget):
         scroll.setWidget(inner)
         return scroll
 
-    def _create_results_panel(self):
+    # ── Generate & Classify — right panel ───────────────────────────────
+
+    def _create_gen_results_panel(self):
+        """Right side of the Generate & Classify page."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -230,27 +261,30 @@ class EvaluateModelTab(QWidget):
         # Classification result card
         result_card = QFrame()
         result_card.setObjectName("card")
-        result_layout = QVBoxLayout(result_card)
-        result_layout.setContentsMargins(24, 16, 24, 16)
+        rc = QVBoxLayout(result_card)
+        rc.setContentsMargins(24, 16, 24, 16)
 
         self.result_title = QLabel("Classification Result")
         self.result_title.setProperty("class", "section-title")
-        result_layout.addWidget(self.result_title)
+        rc.addWidget(self.result_title)
 
         self.result_label = QLabel("—")
         self.result_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #818cf8;")
-        result_layout.addWidget(self.result_label)
+        rc.addWidget(self.result_label)
 
         # Probability bar chart
         self.prob_figure = Figure(figsize=(6, 1.8), dpi=100)
         self.prob_canvas = FigureCanvas(self.prob_figure)
+        self.prob_canvas.setStyleSheet("background: transparent;")
         self.prob_canvas.setMaximumHeight(160)
-        result_layout.addWidget(self.prob_canvas)
+        self.prob_toolbar = NavigationToolbar(self.prob_canvas, result_card)
+        _theme_toolbar(self.prob_toolbar)
+        rc.addWidget(self.prob_toolbar)
+        rc.addWidget(self.prob_canvas)
 
         layout.addWidget(result_card)
 
         # Waveform plots (same tabs as Waveform Selection)
-        from PySide6.QtWidgets import QTabWidget
         self.plot_tabs = QTabWidget()
         self.waveform_plot = PlottingWidget()
         self.freq_plot = FreqDomainPlot()
@@ -263,6 +297,196 @@ class EvaluateModelTab(QWidget):
         self.plot_tabs.addTab(self.spectrogram_plot, "Spectrogram")
 
         layout.addWidget(self.plot_tabs, 1)
+        return panel
+
+    # ── Channel Test — left panel (controls) ─────────────────────────────
+
+    def _create_channel_controls_panel(self):
+        """Left side of the Channel Test page — impairment controls."""
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(10)
+
+        title = QLabel("Channel Impairments")
+        title.setProperty("class", "section-title")
+        layout.addWidget(title)
+        subtitle = QLabel("Add noise / impairments to the generated waveform and re-classify")
+        subtitle.setProperty("class", "section-subtitle")
+        layout.addWidget(subtitle)
+
+        # --- AWGN ---
+        awgn_header = QHBoxLayout()
+        awgn_left = QVBoxLayout()
+        awgn_t = QLabel("AWGN (Additive White Gaussian Noise)")
+        awgn_t.setProperty("class", "section-title")
+        awgn_left.addWidget(awgn_t)
+        awgn_header.addLayout(awgn_left)
+        awgn_header.addStretch()
+        self.ch_awgn_toggle = ToggleSwitch()
+        self.ch_awgn_toggle.setChecked(True)
+        awgn_header.addWidget(self.ch_awgn_toggle)
+        layout.addLayout(awgn_header)
+
+        self.ch_awgn_controls = QWidget()
+        awgn_ctrl = QVBoxLayout(self.ch_awgn_controls)
+        awgn_ctrl.setContentsMargins(0, 0, 0, 0)
+        self.ch_snr_db = 20.0
+        awgn_ctrl.addLayout(self._create_slider_control(
+            "SNR (dB)", 20.0, "dB", -10, 40, "ch_snr_db"))
+        layout.addWidget(self.ch_awgn_controls)
+
+        def _on_ch_awgn_toggled(checked):
+            self.ch_awgn_controls.setEnabled(checked)
+        self.ch_awgn_toggle.toggled.connect(_on_ch_awgn_toggled)
+
+        sep1 = QFrame(); sep1.setFrameShape(QFrame.HLine); sep1.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep1)
+
+        # --- Amplitude & Phase Shift ---
+        ap_header = QHBoxLayout()
+        ap_left = QVBoxLayout()
+        ap_t = QLabel("Amplitude & Phase Shift")
+        ap_t.setProperty("class", "section-title")
+        ap_left.addWidget(ap_t)
+        ap_header.addLayout(ap_left)
+        ap_header.addStretch()
+        self.ch_amp_phase_toggle = ToggleSwitch()
+        self.ch_amp_phase_toggle.setChecked(False)
+        ap_header.addWidget(self.ch_amp_phase_toggle)
+        layout.addLayout(ap_header)
+
+        self.ch_amp_phase_controls = QWidget()
+        ap_ctrl = QVBoxLayout(self.ch_amp_phase_controls)
+        ap_ctrl.setContentsMargins(0, 0, 0, 0)
+
+        self.ch_amplitude = 1.0
+        ap_ctrl.addWidget(QLabel("Amplitude Scaling"))
+        self.ch_amplitude_spin = QDoubleSpinBox()
+        self.ch_amplitude_spin.setRange(0.0, 5.0)
+        self.ch_amplitude_spin.setSingleStep(0.1)
+        self.ch_amplitude_spin.setValue(1.0)
+        self.ch_amplitude_spin.valueChanged.connect(lambda v: setattr(self, 'ch_amplitude', v))
+        ap_ctrl.addWidget(self.ch_amplitude_spin)
+
+        self.ch_phase_deg = 0.0
+        ap_ctrl.addWidget(QLabel("Phase Shift (degrees)"))
+        self.ch_phase_spin = QDoubleSpinBox()
+        self.ch_phase_spin.setRange(-180.0, 180.0)
+        self.ch_phase_spin.setSingleStep(5.0)
+        self.ch_phase_spin.setValue(0.0)
+        self.ch_phase_spin.valueChanged.connect(lambda v: setattr(self, 'ch_phase_deg', v))
+        ap_ctrl.addWidget(self.ch_phase_spin)
+
+        self.ch_amp_phase_controls.setEnabled(False)
+        layout.addWidget(self.ch_amp_phase_controls)
+
+        def _on_ch_ap_toggled(checked):
+            self.ch_amp_phase_controls.setEnabled(checked)
+        self.ch_amp_phase_toggle.toggled.connect(_on_ch_ap_toggled)
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep2)
+
+        # --- Frequency Offset ---
+        fo_header = QHBoxLayout()
+        fo_left = QVBoxLayout()
+        fo_t = QLabel("Frequency Offset (CFO)")
+        fo_t.setProperty("class", "section-title")
+        fo_left.addWidget(fo_t)
+        fo_header.addLayout(fo_left)
+        fo_header.addStretch()
+        self.ch_freq_shift_toggle = ToggleSwitch()
+        self.ch_freq_shift_toggle.setChecked(False)
+        fo_header.addWidget(self.ch_freq_shift_toggle)
+        layout.addLayout(fo_header)
+
+        self.ch_freq_shift_controls = QWidget()
+        fs_ctrl = QVBoxLayout(self.ch_freq_shift_controls)
+        fs_ctrl.setContentsMargins(0, 0, 0, 0)
+
+        self.ch_freq_shift_hz = 0.0
+        fs_ctrl.addWidget(QLabel("Frequency Offset (MHz)"))
+        self.ch_freq_shift_spin = QDoubleSpinBox()
+        self.ch_freq_shift_spin.setRange(-100.0, 100.0)
+        self.ch_freq_shift_spin.setSingleStep(0.01)
+        self.ch_freq_shift_spin.setDecimals(4)
+        self.ch_freq_shift_spin.setValue(0.0)
+        self.ch_freq_shift_spin.valueChanged.connect(
+            lambda v: setattr(self, 'ch_freq_shift_hz', v * 1e6))
+        fs_ctrl.addWidget(self.ch_freq_shift_spin)
+
+        self.ch_freq_shift_controls.setEnabled(False)
+        layout.addWidget(self.ch_freq_shift_controls)
+
+        def _on_ch_fs_toggled(checked):
+            self.ch_freq_shift_controls.setEnabled(checked)
+        self.ch_freq_shift_toggle.toggled.connect(_on_ch_fs_toggled)
+
+        # --- Apply & Classify ---
+        layout.addSpacing(8)
+        self.ch_apply_btn = QPushButton("▶ Apply Impairments & Classify")
+        self.ch_apply_btn.setObjectName("primaryButton")
+        self.ch_apply_btn.setMinimumHeight(36)
+        self.ch_apply_btn.clicked.connect(self._channel_test_classify)
+        layout.addWidget(self.ch_apply_btn)
+
+        self.ch_status_label = QLabel("Generate a waveform first, then apply impairments.")
+        self.ch_status_label.setProperty("class", "stat-label")
+        self.ch_status_label.setWordWrap(True)
+        layout.addWidget(self.ch_status_label)
+
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setObjectName("card")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        return scroll
+
+    # ── Channel Test — right panel (results + comparison) ────────────────
+
+    def _create_channel_results_panel(self):
+        """Right side of the Channel Test page — classification result + comparison."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        # Compact classification result row
+        result_card = QFrame()
+        result_card.setObjectName("card")
+        rc = QHBoxLayout(result_card)
+        rc.setContentsMargins(16, 8, 16, 8)
+
+        ch_title = QLabel("Result:")
+        ch_title.setProperty("class", "section-title")
+        rc.addWidget(ch_title)
+
+        self.ch_result_label = QLabel("—")
+        self.ch_result_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #818cf8;")
+        rc.addWidget(self.ch_result_label)
+        rc.addStretch()
+
+        # Probability bar chart (compact)
+        self.ch_prob_figure = Figure(figsize=(4, 1.2), dpi=100)
+        self.ch_prob_canvas = FigureCanvas(self.ch_prob_figure)
+        self.ch_prob_canvas.setStyleSheet("background: transparent;")
+        self.ch_prob_canvas.setFixedHeight(100)
+        self.ch_prob_canvas.setMinimumWidth(300)
+        rc.addWidget(self.ch_prob_canvas)
+
+        # Toolbar hidden — use save from comparison widget instead
+        self.ch_prob_toolbar = None
+
+        layout.addWidget(result_card)
+
+        # Comparison widget (clean vs augmented) — gets all remaining space
+        from mixedsignal_gui.widgets.comparison_widget import ComparisonWidget
+        self.ch_comparison_plot = ComparisonWidget()
+        layout.addWidget(self.ch_comparison_plot, 1)
         return panel
 
     # ------------------------------------------------------------------
@@ -361,6 +585,7 @@ class EvaluateModelTab(QWidget):
     # Smart defaults per waveform type
     # ------------------------------------------------------------------
 
+    # Presets store internal units (Hz, seconds) — spin boxes display MHz / µs
     _WAVEFORM_PRESETS = {
         'PAM':    {'fs': 48e3, 'fc': 6e3, 'Tsymb': 1e-3, 'M': 4},
         'QAM':    {'fs': 48e3, 'fc': 6e3, 'Tsymb': 1e-3, 'M': 16},
@@ -380,12 +605,13 @@ class EvaluateModelTab(QWidget):
         preset = self._WAVEFORM_PRESETS.get(modulation, {})
         if not preset:
             return
+        # Convert to display units (MHz, µs) before setting spin-box values
         if 'fs' in preset:
-            self.fs_spin.setValue(preset['fs'])
+            self.fs_spin.setValue(preset['fs'] / 1e6)
         if 'fc' in preset:
-            self.fc_spin.setValue(preset['fc'])
+            self.fc_spin.setValue(preset['fc'] / 1e6)
         if 'Tsymb' in preset:
-            self.tsymb_spin.setValue(preset['Tsymb'])
+            self.tsymb_spin.setValue(preset['Tsymb'] * 1e6)
         if 'M' in preset:
             self.M_spin.setValue(preset['M'])
 
@@ -405,6 +631,21 @@ class EvaluateModelTab(QWidget):
         span = int(self.span)
         pulse_shape = self.pulse_shape_combo.currentText()
 
+        # Enforce Nyquist (matches Waveform Selection tab)
+        if fc >= fs / 2:
+            QMessageBox.warning(
+                self, "Invalid Parameters",
+                f"fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
+            return
+
+        # Validate: fs * Tsymb must be an integer (samples per symbol)
+        sps_raw = fs * tsymb
+        if abs(sps_raw - round(sps_raw)) > 1e-9:
+            QMessageBox.warning(
+                self, "Invalid Parameters",
+                f"fs × Tsymb = {sps_raw:.6f} must be an integer (samples per symbol)")
+            return
+
         # --- Generate waveform via WaveformPipeline ---
         try:
             from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
@@ -413,7 +654,7 @@ class EvaluateModelTab(QWidget):
                 fs=fs, Tsymb=tsymb, Nsymb=nsymb, fc=fc, M=m,
                 modulation=modulation, var=var,
                 alpha=alpha, span=span, pulse_shape=pulse_shape,
-                output_type='passband',
+                output_type=self.output_type,
             )
             data = result['signal']
             sps = int(round(fs * tsymb))
@@ -426,27 +667,33 @@ class EvaluateModelTab(QWidget):
 
         self._last_signal = data
         self._last_modulation = modulation
+        baseband_symbols = result.get("baseband_symbols")
 
-        # --- Update plots ---
-        T = len(data) / fs
-        t = np.linspace(0, T, len(data))
+        # --- Update plots (matches Waveform Selection tab) ---
+        t = np.arange(len(data)) / fs * 1e6   # time axis in µs
 
-        # Compute frequency domain in Python (no MATLAB call needed)
+        # Time domain: for complex data plot I and Q; for real plot as-is
+        if np.iscomplexobj(data):
+            self.waveform_plot.plot_data(t, np.real(data), np.imag(data))
+        else:
+            self.waveform_plot.plot_data(t, np.real(data))
+
+        # Frequency domain: for complex use fftshift for centered spectrum
         if np.iscomplexobj(data):
             ft = np.fft.fftshift(np.fft.fft(data))
-            freqs = np.fft.fftshift(np.fft.fftfreq(len(data), 1 / fs))
+            freqs = np.fft.fftshift(np.fft.fftfreq(len(data), 1 / fs)) * 1e-6
         else:
             ft = np.fft.fft(data)
-            freqs = np.fft.fftfreq(len(data), 1 / fs)
+            freqs = np.fft.fftfreq(len(data), 1 / fs) * 1e-6
 
-        self.waveform_plot.plot_data(t, data)
         self.freq_plot.plot_data(freqs, np.abs(ft))
-        self.spectrogram_plot.plot_data(data, fs, modulation=modulation)
+
         self.constellation_plot.plot_data(
             data=data, fs=fs, fc=fc, sps=sps, M=m,
-            modulation=modulation, alpha=alpha, span=span,
-            pulse_shape=pulse_shape, nsymb=nsymb,
+            modulation=modulation, nsymb=nsymb,
+            baseband_symbols=baseband_symbols,
         )
+        self.spectrogram_plot.plot_data(x=data, fs=fs, modulation=modulation)
 
         # --- Classify ---
         if self.model is None:
@@ -460,8 +707,12 @@ class EvaluateModelTab(QWidget):
     # Classification
     # ------------------------------------------------------------------
 
-    def _classify_signal(self, data):
-        """Preprocess one signal and run inference."""
+    def _classify_signal(self, data, target='generate'):
+        """Preprocess one signal and run inference.
+
+        target: 'generate' updates the Generate & Classify tab,
+                'channel' updates the Channel Test tab.
+        """
         from mixedsignal_gui.backend.trainer import TrainerThread
         target_len = TrainerThread.TARGET_LENGTH
 
@@ -492,17 +743,28 @@ class EvaluateModelTab(QWidget):
             pred_name = f"Class {pred_idx}"
 
         confidence = probs[pred_idx] * 100
-        self.result_label.setText(f"{pred_name}  ({confidence:.1f}%)")
-        self.status_label.setText(
-            f"Generated {self._last_modulation} waveform → classified as {pred_name}"
-        )
 
-        self._plot_probabilities(probs)
+        if target == 'channel':
+            self.ch_result_label.setText(f"{pred_name}  ({confidence:.1f}%)")
+            self.ch_status_label.setText(
+                f"Augmented {self._last_modulation} → classified as {pred_name}")
+            self._plot_probabilities(probs, target='channel')
+        else:
+            self.result_label.setText(f"{pred_name}  ({confidence:.1f}%)")
+            self.status_label.setText(
+                f"Generated {self._last_modulation} waveform → classified as {pred_name}"
+            )
+            self._plot_probabilities(probs, target='generate')
 
-    def _plot_probabilities(self, probs):
+    def _plot_probabilities(self, probs, target='generate'):
         """Draw horizontal bar chart of class probabilities."""
-        self.prob_figure.clear()
-        ax = self.prob_figure.add_subplot(111)
+        if target == 'channel':
+            fig, canvas = self.ch_prob_figure, self.ch_prob_canvas
+        else:
+            fig, canvas = self.prob_figure, self.prob_canvas
+
+        fig.clear()
+        ax = fig.add_subplot(111)
 
         n = len(probs)
         labels = self.class_labels[:n] if self.class_labels else [f"C{i}" for i in range(n)]
@@ -516,9 +778,104 @@ class EvaluateModelTab(QWidget):
         ax.set_xlabel('Confidence (%)', fontsize=9)
         ax.invert_yaxis()
 
-        _apply_theme_style(self.prob_figure, self)
-        self.prob_figure.tight_layout()
-        self.prob_canvas.draw()
+        _apply_theme_style(fig, self)
+        fig.tight_layout()
+        canvas.draw()
+
+    # ------------------------------------------------------------------
+    # Slider helper (matches ChannelNoiseTab)
+    # ------------------------------------------------------------------
+
+    def _create_slider_control(self, label, value, unit, min_val, max_val, attr_name):
+        """Create a slider control with label and value display."""
+        container = QVBoxLayout()
+        container.setSpacing(4)
+
+        header = QHBoxLayout()
+        label_widget = QLabel(label)
+        value_label = QLabel(f"{int(value)} {unit}")
+        value_label.setProperty("class", "stat-value")
+        header.addWidget(label_widget)
+        header.addStretch()
+        header.addWidget(value_label)
+        container.addLayout(header)
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(min_val)
+        slider.setMaximum(max_val)
+        slider.setValue(int(value))
+
+        def update_value(v):
+            value_label.setText(f"{v} {unit}")
+            setattr(self, attr_name, float(v))
+
+        slider.valueChanged.connect(update_value)
+        container.addWidget(slider)
+
+        return container
+
+    # ------------------------------------------------------------------
+    # Channel Test — apply impairments and re-classify
+    # ------------------------------------------------------------------
+
+    def _channel_test_classify(self):
+        """Apply channel impairments to the last generated signal and classify."""
+        if self._last_signal is None:
+            QMessageBox.warning(
+                self, "No Signal",
+                "Generate a waveform first in the 'Generate & Classify' tab.")
+            return
+
+        clean = self._last_signal
+        fs = float(self.fs)
+
+        # Build augmentation pipeline (same as ChannelNoiseTab AWGN path)
+        pipeline = AugmentationPipeline()
+        if self.ch_awgn_toggle.isChecked():
+            pipeline.add(AWGNAugmentation(snr_db=self.ch_snr_db))
+        if self.ch_amp_phase_toggle.isChecked():
+            phase_rad = np.deg2rad(self.ch_phase_deg)
+            pipeline.add(ScalarAmplitudeAndPhaseShift(
+                amplitude=self.ch_amplitude, phi=phase_rad))
+        if self.ch_freq_shift_toggle.isChecked():
+            pipeline.add(FrequencyShift(delta_f=self.ch_freq_shift_hz))
+
+        augmented = pipeline.apply(clean, fs)
+
+        # Update comparison plot
+        modulation = self._last_modulation
+        fc = float(self.fc)
+        tsymb = float(self.Tsymb)
+        sps = int(round(fs * tsymb))
+        m = float(self.M)
+        nsymb = int(self.Nsymb)
+        alpha = float(self.alpha)
+        span = int(self.span)
+        pulse_shape = self.pulse_shape_combo.currentText()
+
+        self.ch_comparison_plot.plot_comparison(
+            clean_signal=clean,
+            augmented_signal=augmented,
+            fs=fs,
+            fc=fc,
+            sps=sps,
+            modulation=modulation,
+            M=m,
+            alpha=alpha,
+            span=span,
+            pulse_shape=pulse_shape,
+            nsymb=nsymb,
+        )
+
+        # Classify the augmented signal
+        if self.model is None:
+            self.ch_result_label.setText("No model loaded")
+            self.ch_status_label.setText("Load a model to classify.")
+            return
+
+        self.ch_status_label.setText(
+            f"Applied impairments to {self._last_modulation} waveform — classifying…")
+        self._classify_signal(augmented, target='channel')
 
     # ------------------------------------------------------------------
     # IQ helpers (same as trainer / inference)

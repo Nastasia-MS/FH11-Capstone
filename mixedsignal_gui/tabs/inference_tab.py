@@ -5,7 +5,7 @@ classification report, and multi-class ROC curves.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QFileDialog, QTabWidget, QMessageBox,
+    QFileDialog, QTabWidget, QMessageBox, QScrollArea,
 )
 from PySide6.QtCore import Qt, QEvent, QSettings
 from PySide6.QtWidgets import QApplication
@@ -123,9 +123,28 @@ class InferenceResultsTab(QWidget):
     # ── UI setup ─────────────────────────────────────────────────────────
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Left panel — configuration / controls (scrollable)
+        left_panel = self._create_configuration_panel()
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("card")
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout.addWidget(left_scroll, 1)
+
+        # Right panel — visualizations
+        right_panel = self._create_visualizations_panel()
+        layout.addWidget(right_panel, 2)
+
+    def _create_configuration_panel(self):
+        """Create the left-side controls panel (model + data loading)."""
+        panel = QFrame()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(10)
 
         # Header
         title = QLabel("Model Evaluation")
@@ -135,109 +154,97 @@ class InferenceResultsTab(QWidget):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        # ── Model card ───────────────────────────────────────────────────
-        model_card = QFrame()
-        model_card.setObjectName("card")
-        mc = QVBoxLayout(model_card)
-        mc.setContentsMargins(16, 12, 16, 12)
-        mc.setSpacing(6)
+        # ── Model section ────────────────────────────────────────────────
+        model_label = QLabel("Model")
+        model_label.setProperty("class", "section-title")
+        layout.addWidget(model_label)
 
-        row1 = QHBoxLayout()
         self.load_model_btn = QPushButton("Load Model (.pth)")
         self.load_model_btn.clicked.connect(self._on_load_model)
-        row1.addWidget(self.load_model_btn)
+        layout.addWidget(self.load_model_btn)
+
         self.model_label = QLabel("No model loaded")
         self.model_label.setProperty("class", "stat-label")
-        row1.addWidget(self.model_label)
-        row1.addStretch()
-        mc.addLayout(row1)
+        self.model_label.setWordWrap(True)
+        layout.addWidget(self.model_label)
 
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Classes:"))
+        layout.addWidget(QLabel("Classes:"))
         self.class_labels_label = QLabel("—")
         self.class_labels_label.setProperty("class", "stat-label")
-        row2.addWidget(self.class_labels_label)
-        row2.addStretch()
-        mc.addLayout(row2)
+        self.class_labels_label.setWordWrap(True)
+        layout.addWidget(self.class_labels_label)
 
-        layout.addWidget(model_card)
+        # ── Data section ─────────────────────────────────────────────────
+        data_label = QLabel("Test Data")
+        data_label.setProperty("class", "section-title")
+        layout.addWidget(data_label)
 
-        # ── Data card ────────────────────────────────────────────────────
-        data_card = QFrame()
-        data_card.setObjectName("card")
-        dc = QVBoxLayout(data_card)
-        dc.setContentsMargins(16, 12, 16, 12)
-        dc.setSpacing(6)
-
-        btn_row = QHBoxLayout()
         self.load_data_btn = QPushButton("Load Test Data Folder")
         self.load_data_btn.clicked.connect(self._on_load_test_folder)
         self.load_data_btn.setEnabled(False)
-        btn_row.addWidget(self.load_data_btn)
+        layout.addWidget(self.load_data_btn)
 
         self.load_registry_btn = QPushButton("Load from Dataset Registry")
         self.load_registry_btn.clicked.connect(self._on_load_from_registry)
         self.load_registry_btn.setEnabled(False)
-        btn_row.addWidget(self.load_registry_btn)
-        btn_row.addStretch()
-        dc.addLayout(btn_row)
+        layout.addWidget(self.load_registry_btn)
 
         self.data_label = QLabel("No test data loaded")
         self.data_label.setProperty("class", "stat-label")
-        dc.addWidget(self.data_label)
-        layout.addWidget(data_card)
+        self.data_label.setWordWrap(True)
+        layout.addWidget(self.data_label)
 
-        # ── Evaluate All button ──────────────────────────────────────────
-        eval_row = QHBoxLayout()
-        self.eval_all_btn = QPushButton("Evaluate All")
+        # ── Evaluate button ──────────────────────────────────────────────
+        self.eval_all_btn = QPushButton("▶ Evaluate All")
         self.eval_all_btn.setEnabled(False)
         self.eval_all_btn.clicked.connect(self._evaluate_all)
         self.eval_all_btn.setMinimumHeight(36)
-        eval_row.addWidget(self.eval_all_btn)
-        eval_row.addStretch()
-        layout.addLayout(eval_row)
+        layout.addWidget(self.eval_all_btn)
 
-        # ── Evaluation tabs ──────────────────────────────────────────────
+        # ── Classification report (text) ─────────────────────────────────
+        report_title = QLabel("Classification Report")
+        report_title.setProperty("class", "section-title")
+        layout.addWidget(report_title)
+
+        self.report_label = QLabel("Run evaluation to see report")
+        self.report_label.setProperty("class", "stat-label")
+        self.report_label.setWordWrap(True)
+        self.report_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.report_label.setStyleSheet("font-family: monospace;")
+        layout.addWidget(self.report_label)
+
+        layout.addStretch()
+        return panel
+
+    def _create_visualizations_panel(self):
+        """Create the right-side visualization panel (plots in tabs)."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(24, 24, 24, 24)
+
         self.eval_tabs = QTabWidget()
-        self.eval_tabs.setEnabled(False)
 
-        # Confusion matrix
-        cm_w = QFrame()
-        cm_w.setObjectName("card")
+        # Confusion matrix tab
+        cm_w = QWidget()
         cm_l = QVBoxLayout(cm_w)
         cm_l.setContentsMargins(0, 0, 0, 0)
         bg, _, _ = _mpl_theme()
         self.cm_figure = Figure(dpi=100, facecolor=bg)
         self.cm_canvas = FigureCanvas(self.cm_figure)
         self.cm_canvas.setStyleSheet("background: transparent;")
-        self.cm_canvas.setMinimumHeight(400)
         self.cm_toolbar = NavigationToolbar(self.cm_canvas, cm_w)
         _theme_toolbar(self.cm_toolbar)
         cm_l.addWidget(self.cm_toolbar)
-        cm_l.addWidget(self.cm_canvas, 1)          # stretch factor
+        cm_l.addWidget(self.cm_canvas, 1)
         self.eval_tabs.addTab(cm_w, "Confusion Matrix")
 
-        # Classification report
-        rpt_w = QFrame()
-        rpt_w.setObjectName("card")
-        rpt_l = QVBoxLayout(rpt_w)
-        self.report_label = QLabel("Run evaluation to see classification report")
-        self.report_label.setProperty("class", "stat-label")
-        self.report_label.setWordWrap(True)
-        self.report_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.report_label.setStyleSheet("font-family: monospace;")
-        rpt_l.addWidget(self.report_label)
-        self.eval_tabs.addTab(rpt_w, "Classification Report")
-
-        # ROC curves
-        roc_w = QFrame()
-        roc_w.setObjectName("card")
+        # ROC curves tab
+        roc_w = QWidget()
         roc_l = QVBoxLayout(roc_w)
         roc_l.setContentsMargins(0, 0, 0, 0)
         self.roc_figure = Figure(dpi=100, facecolor=bg)
         self.roc_canvas = FigureCanvas(self.roc_figure)
         self.roc_canvas.setStyleSheet("background: transparent;")
-        self.roc_canvas.setMinimumHeight(400)
         self.roc_toolbar = NavigationToolbar(self.roc_canvas, roc_w)
         _theme_toolbar(self.roc_toolbar)
         roc_l.addWidget(self.roc_toolbar)
@@ -245,6 +252,7 @@ class InferenceResultsTab(QWidget):
         self.eval_tabs.addTab(roc_w, "ROC Curves")
 
         layout.addWidget(self.eval_tabs)
+        return panel
 
     # ── Device helper ────────────────────────────────────────────────────
 
