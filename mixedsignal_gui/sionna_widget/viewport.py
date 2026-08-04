@@ -10,12 +10,13 @@ Adapted from ``sionna-gui2/gui/viewport_3d.py``.  Key changes:
 """
 
 import math
+import os
 import numpy as np
 from enum import Enum
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QToolBar, QLabel
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtCore import Qt, QEvent, QPoint, Signal
 from PySide6.QtGui import QVector3D, QAction
 from OpenGL.GL import *
 
@@ -40,6 +41,27 @@ class PlacementMode(Enum):
 #: display and picking.  Sionna always keeps the full-resolution geometry —
 #: this never affects path computation.
 DISPLAY_FACE_BUDGET = 150_000
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Camera zoom tuning
+# ═══════════════════════════════════════════════════════════════════
+
+#: Camera-distance multiplier per wheel notch (0.85 => 15% closer per notch).
+ZOOM_PER_NOTCH = 0.85
+
+#: Trackpad pixels equivalent to one wheel notch.  Sized so a typical macOS
+#: pixelDelta of 2-10 gives roughly 3-10% per event.  This matters more than it
+#: looks: a previous divisor of 50 produced 0.4-2% per event, which needed ~364
+#: events for a 10x zoom and read as nothing happening at all.
+TRACKPAD_PIXELS_PER_NOTCH = 15.0
+
+#: Converts a pinch gesture's magnification delta into notches.
+PINCH_NOTCHES_PER_UNIT = 10.0
+
+#: Set SIONNA_VIEWPORT_DEBUG=1 to log the raw scroll/pinch values a device
+#: actually emits — the only reliable way to calibrate the constants above.
+_ZOOM_DEBUG = bool(os.environ.get("SIONNA_VIEWPORT_DEBUG"))
 
 
 def decimate_mesh(vertices, faces, target_faces):
@@ -736,32 +758,114 @@ class SceneGLWidget(QOpenGLWidget):
         self._last_mouse_pos = pos
         self.update()
 
+    def _cursor_focus_point(self, cursor_pos):
+        """World point under the cursor, for zooming toward what you point at.
+
+        Intersects the cursor ray with the plane through ``camera_target``
+        whose normal is the view direction.  Deliberately not a mesh raycast:
+        ``_ray_cast_scene`` costs milliseconds across the display mesh, and
+        scroll events arrive at 60-120 Hz.
+
+        Returns None when the geometry is degenerate, in which case the caller
+        falls back to zooming toward the scene centre.
+        """
+        try:
+            origin, direction = self._screen_to_ray(cursor_pos.x(), cursor_pos.y())
+        except Exception:
+            return None
+
+        t = self.camera_target
+        target = np.array([t.x(), t.y(), t.z()], dtype=np.float64)
+
+        cam = self._get_camera_pos()
+        view = target - np.array([cam.x(), cam.y(), cam.z()], dtype=np.float64)
+        norm = np.linalg.norm(view)
+        if norm < 1e-9:
+            return None
+        normal = view / norm
+
+        denom = float(np.dot(direction, normal))
+        if abs(denom) < 1e-9:            # ray parallel to the plane
+            return None
+        d = float(np.dot(target - origin, normal)) / denom
+        if d <= 0:                       # plane is behind the camera
+            return None
+        return origin + direction * d
+
+    def _zoom_by(self, notches, cursor_pos=None):
+        """Zoom by *notches* wheel steps, optionally anchored at the cursor.
+
+        Shared by the wheel and pinch handlers so the two cannot drift apart.
+        """
+        if not notches:
+            return
+
+        lo = max(1.0, self._scene_radius * 0.002)
+        hi = self._scene_radius * 20.0
+        new_distance = min(hi, max(lo, self.camera_distance * (ZOOM_PER_NOTCH ** notches)))
+
+        # Use the ratio that actually survived clamping — otherwise the target
+        # keeps sliding toward the cursor after the distance has pinned.
+        applied = new_distance / self.camera_distance if self.camera_distance else 1.0
+
+        if cursor_pos is not None and abs(applied - 1.0) > 1e-12:
+            focus = self._cursor_focus_point(cursor_pos)
+            if focus is not None:
+                t = self.camera_target
+                target = np.array([t.x(), t.y(), t.z()], dtype=np.float64)
+                shifted = focus + (target - focus) * applied
+                self.camera_target = QVector3D(*(float(v) for v in shifted))
+
+        self.camera_distance = new_distance
+        if _ZOOM_DEBUG:
+            print(f"[viewport] notches={notches:+.3f} applied={applied:.4f} "
+                  f"distance={self.camera_distance:.1f}")
+        self.update()
+
     def wheelEvent(self, event):
         """Zoom the camera, supporting both mouse wheels and trackpads.
 
-        Trackpads (notably on macOS) report fine-grained ``pixelDelta`` and
-        leave ``angleDelta`` at zero; mice report ``angleDelta`` in 1/8-degree
-        steps and no ``pixelDelta``.  Reading whichever is non-zero keeps both
-        working, and bailing out on a zero delta matters: treating "no scroll"
-        as "scroll down" made every event zoom out, leaving no way to zoom in.
+        Trackpads report fine-grained ``pixelDelta`` and may leave
+        ``angleDelta`` at zero; mice report ``angleDelta`` in 1/8-degree steps
+        and no ``pixelDelta``.  Reading whichever is non-zero keeps both
+        working, and the zero-delta guard matters: treating "no scroll" as
+        "scroll down" once made every event zoom out with no way back in.
+
+        ``inverted()`` is deliberately not compensated for — with macOS natural
+        scrolling Qt has already flipped the sign, and honouring that keeps
+        this viewport consistent with every other app on the machine.
         """
         pixel_delta = event.pixelDelta().y()
         angle_delta = event.angleDelta().y()
+
         if pixel_delta != 0:
-            steps = pixel_delta / 50.0
+            notches = pixel_delta / TRACKPAD_PIXELS_PER_NOTCH
         elif angle_delta != 0:
-            steps = angle_delta / 120.0
+            notches = angle_delta / 120.0
         else:
+            event.ignore()
             return
 
-        # Continuous factor, so trackpad zoom is smooth rather than stepped.
-        factor = 0.9 ** steps
-        self.camera_distance = max(
-            max(1.0, self._scene_radius * 0.002),
-            min(self._scene_radius * 20,
-                self.camera_distance * factor),
-        )
-        self.update()
+        if _ZOOM_DEBUG:
+            print(f"[viewport] wheel pixelDelta={pixel_delta} "
+                  f"angleDelta={angle_delta} inverted={event.inverted()}")
+
+        self._zoom_by(notches, event.position())
+        event.accept()
+
+    def event(self, ev):
+        """Route trackpad pinch to the zoom path.
+
+        A macOS pinch arrives as a native gesture and never produces a wheel
+        event, so without this pinching does nothing at all.
+        """
+        if ev.type() == QEvent.Type.NativeGesture and \
+                ev.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            if _ZOOM_DEBUG:
+                print(f"[viewport] pinch value={ev.value():+.4f}")
+            self._zoom_by(ev.value() * PINCH_NOTCHES_PER_UNIT, ev.position())
+            return True
+        return super().event(ev)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
