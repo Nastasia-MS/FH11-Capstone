@@ -38,6 +38,16 @@ BUNDLED_SCENES: List[Dict[str, Any]] = [
         "description": "Dense urban blocks on a flat ground plane.",
     },
     {
+        "name": "Austin Suburban",
+        "path": _ROOT / "austin" / "Austin_suburban.xml",
+        # Mast well clear of the low suburban rooftops (median 6.5 m, max 17.4 m).
+        "tx_position": [-150.0, -100.0, 25.0],
+        # Street level in an open cell 213 m away, with buildings all around.
+        "rx_position": [12.5, 37.5, 1.5],
+        "frequency_ghz": 3.5,
+        "description": "Low-rise suburban blocks on a flat ground plane.",
+    },
+    {
         "name": "UT Twin",
         "path": _ROOT / "austin" / "UT_Twin_1.xml",
         "tx_position": [0.0, 0.0, 40.0],

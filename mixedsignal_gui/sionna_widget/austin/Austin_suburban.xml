@@ -1,5 +1,15 @@
 <scene version="2.1.0">
 
+<!--
+	The two map_15 building meshes were exported Y-up (Y holds the building
+	heights, 0 to 48 m) while Plane.ply is Z-up like the rest of the scene
+	and Sionna RT itself.  Left uncorrected the buildings lie on their side,
+	sunk into the ground plane.  Each building shape therefore carries a
+	to_world rotation mapping (x, y, z) -> (x, -z, y); no translation is
+	needed because their bases already sit at 0, matching the plane at z = 0.
+	Plane.ply is deliberately left untransformed — it is already correct.
+-->
+
 <!-- Defaults, these can be set via the command line: -Darg=value -->
 
 
@@ -47,11 +57,17 @@
 	<shape type="ply" id="mesh-map_15_osm_buildings-itu_brick" name="mesh-map_15_osm_buildings-itu_brick">
 		<string name="filename" value="meshes/map_15_osm_buildings-itu_brick.ply"/>
 		<boolean name="face_normals" value="true"/>
+		<transform name="to_world">
+			<rotate x="1" angle="90"/>
+		</transform>
 		<ref id="mat-itu_brick" name="bsdf"/>
 	</shape>
 	<shape type="ply" id="mesh-map_15_osm_buildings-itu_brick-001" name="mesh-map_15_osm_buildings-itu_brick-001">
 		<string name="filename" value="meshes/map_15_osm_buildings-itu_brick-001.ply"/>
 		<boolean name="face_normals" value="true"/>
+		<transform name="to_world">
+			<rotate x="1" angle="90"/>
+		</transform>
 		<ref id="mat-itu_brick" name="bsdf"/>
 	</shape>
 
