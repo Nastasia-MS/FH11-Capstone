@@ -8,6 +8,10 @@ recursive-include mixedsignal_gui/resources *
 recursive-include mixedsignal_gui/waveform_functions *.m
 recursive-include mixedsignal_gui/waveform_functions *.mat
 
+# Include bundled Sionna RT scenes (geometry + textures, not .blend sources)
+recursive-include mixedsignal_gui/sionna_widget/hcro *.xml *.ply *.png
+recursive-include mixedsignal_gui/sionna_widget/austin *.xml *.ply
+
 # Include README and LICENSE
 include README.md
 include LICENSE

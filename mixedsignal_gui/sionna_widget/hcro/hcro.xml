@@ -1,0 +1,122 @@
+<scene version="2.1.0">
+
+<!--
+	Hat Creek Radio Observatory (HCRO).
+
+	Derived from the original Blender/Mitsuba export (mitre.xml) with three
+	corrections needed for Sionna RT:
+
+	  1. Material ids use the "mat-itu_" prefix (underscore).  The export
+	     used "mat-itu-" (hyphen), which Sionna does not map to an
+	     ITURadioMaterial — load_scene then rejects the shape with
+	     "Found shape with associated material which is not a radio material".
+	  2. Every shape carries a to_world transform.  The exported meshes are
+	     Y-up with Y in metres above sea level; Sionna RT is Z-up.  The
+	     rotation maps (x, y, z) -> (x, -z, y) and the translation subtracts
+	     the 1015 m site datum, so the observatory floor sits at z ~ 0,
+	     buildings reach z ~ +24, and terrain spans z in [-24, +130].
+	  3. The duplicate terrain shape was dropped.  The export contained
+	     EXPORT_GOOGLE_SAT_WM_002 twice (byte-identical meshes) under two
+	     different materials, which put two coincident surfaces in the scene.
+	     Only the itu_medium_dry_ground copy is kept.
+-->
+
+<!-- Camera and Rendering Parameters -->
+
+	<integrator type="path" id="elm__0" name="elm__0">
+		<integer name="max_depth" value="12"/>
+	</integrator>
+
+<!-- Materials -->
+
+	<bsdf type="twosided" id="mat-itu_wet_ground" name="mat-itu_wet_ground">
+		<bsdf type="principled" name="bsdf">
+			<rgb value="0.800000 0.800000 0.800000" name="base_color"/>
+			<rgb value="1.000000 1.000000 1.000000" name="spec_tint"/>
+			<float name="spec_trans" value="0.000000"/>
+			<float name="metallic" value="0.000000"/>
+			<float name="anisotropic" value="0.000000"/>
+			<float name="roughness" value="0.250000"/>
+			<float name="sheen" value="0.000000"/>
+			<rgb value="1.000000 1.000000 1.000000" name="sheen_tint"/>
+			<float name="clearcoat" value="0.000000"/>
+			<float name="clearcoat_gloss" value="0.000900"/>
+			<float name="specular" value="0.500000"/>
+		</bsdf>
+	</bsdf>
+	<bsdf type="twosided" id="mat-itu_concrete" name="mat-itu_concrete">
+		<bsdf type="principled" name="bsdf">
+			<rgb value="0.800000 0.800000 0.800000" name="base_color"/>
+			<rgb value="1.000000 1.000000 1.000000" name="spec_tint"/>
+			<float name="spec_trans" value="0.000000"/>
+			<float name="metallic" value="0.000000"/>
+			<float name="anisotropic" value="0.000000"/>
+			<float name="roughness" value="0.250000"/>
+			<float name="sheen" value="0.000000"/>
+			<rgb value="1.000000 1.000000 1.000000" name="sheen_tint"/>
+			<float name="clearcoat" value="0.000000"/>
+			<float name="clearcoat_gloss" value="0.000900"/>
+			<float name="specular" value="0.500000"/>
+		</bsdf>
+	</bsdf>
+	<bsdf type="twosided" id="mat-itu_medium_dry_ground" name="mat-itu_medium_dry_ground">
+		<bsdf type="principled" name="bsdf">
+			<texture type="bitmap" name="base_color">
+				<string name="filename" value="textures/EXPORT_GOOGLE_SAT_WM.004.png"/>
+			</texture>
+			<rgb value="1.000000 1.000000 1.000000" name="spec_tint"/>
+			<float name="spec_trans" value="0.000000"/>
+			<float name="metallic" value="0.000000"/>
+			<float name="anisotropic" value="0.000000"/>
+			<float name="roughness" value="0.250000"/>
+			<float name="sheen" value="0.000000"/>
+			<rgb value="1.000000 1.000000 1.000000" name="sheen_tint"/>
+			<float name="clearcoat" value="0.000000"/>
+			<float name="clearcoat_gloss" value="0.000900"/>
+			<float name="specular" value="0.500000"/>
+		</bsdf>
+	</bsdf>
+
+<!-- Emitters -->
+
+
+<!-- Shapes -->
+
+	<shape type="ply" id="elm__2" name="elm__2">
+		<string name="filename" value="meshes/Areas_natural.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<transform name="to_world">
+			<rotate x="1" angle="90"/>
+			<translate value="0 0 -1015"/>
+		</transform>
+		<ref id="mat-itu_wet_ground" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__4" name="elm__4">
+		<string name="filename" value="meshes/Areas_building.ply"/>
+		<boolean name="face_normals" value="true"/>
+		<transform name="to_world">
+			<rotate x="1" angle="90"/>
+			<translate value="0 0 -1015"/>
+		</transform>
+		<ref id="mat-itu_concrete" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__6" name="elm__6">
+		<string name="filename" value="meshes/EXPORT_GOOGLE_SAT_WM_001.ply"/>
+		<transform name="to_world">
+			<rotate x="1" angle="90"/>
+			<translate value="0 0 -1015"/>
+		</transform>
+		<ref id="mat-itu_medium_dry_ground" name="bsdf"/>
+	</shape>
+	<shape type="ply" id="elm__9" name="elm__9">
+		<string name="filename" value="meshes/EXPORT_GOOGLE_SAT_WM_002-itu-medium_dry_ground.ply"/>
+		<transform name="to_world">
+			<rotate x="1" angle="90"/>
+			<translate value="0 0 -1015"/>
+		</transform>
+		<ref id="mat-itu_medium_dry_ground" name="bsdf"/>
+	</shape>
+
+<!-- Volumes -->
+
+</scene>

@@ -13,6 +13,7 @@ from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift,
                                   StochasticTDLAugmentation, SionnaRTAugmentation)
+from mixedsignal_gui.sionna_widget.scenes import available_scenes
 import numpy as np
 import json
 import os
@@ -529,6 +530,13 @@ class ChannelNoiseTab(QWidget):
         self.rt_scene_label.setProperty("class", "section-subtitle")
         layout.addWidget(self.rt_scene_label)
 
+        self.rt_preset_combo = QComboBox()
+        self.rt_preset_combo.addItem("Bundled scene...", None)
+        for scene in available_scenes():
+            self.rt_preset_combo.addItem(scene["name"], scene)
+        self.rt_preset_combo.currentIndexChanged.connect(self._rt_load_preset)
+        layout.addWidget(self.rt_preset_combo)
+
         self.rt_load_scene_btn = QPushButton("Load Scene...")
         self.rt_load_scene_btn.clicked.connect(self._rt_load_scene)
         layout.addWidget(self.rt_load_scene_btn)
@@ -853,8 +861,19 @@ class ChannelNoiseTab(QWidget):
         )
         if not path:
             return
+        # Browsing to a file clears any bundled-scene selection
+        self.rt_preset_combo.blockSignals(True)
+        self.rt_preset_combo.setCurrentIndex(0)
+        self.rt_preset_combo.blockSignals(False)
+        self._rt_load_scene_path(path)
+
+    def _rt_load_scene_path(self, path: str) -> bool:
+        """Load *path* into the widget, resetting stale RT state.
+
+        Shared by the file dialog and the bundled-scene picker.
+        """
         if not self._ensure_sionna_widget():
-            return
+            return False
 
         # Clear stale taps from a previous scene
         self.rt_last_taps = None
@@ -865,10 +884,47 @@ class ChannelNoiseTab(QWidget):
 
         try:
             self.sionna_widget.load_scene(path)
-            self.rt_scene_label.setText(path.rsplit("/", 1)[-1])
+            self.rt_scene_label.setText(os.path.basename(path))
+            return True
         except Exception as e:
             self.rt_status_label.setText(f"Error loading scene: {e}")
             print(f"Failed to load scene: {e}")
+            return False
+
+    def _rt_load_preset(self, _index=None):
+        """Load a bundled scene and apply its TX/RX and frequency defaults."""
+        scene = self.rt_preset_combo.currentData()
+        if scene is None:
+            return
+        if not self._rt_load_scene_path(str(scene["path"])):
+            return
+
+        for spin, value in zip(
+            (self.rt_tx_x, self.rt_tx_y, self.rt_tx_z), scene["tx_position"]
+        ):
+            spin.setValue(value)
+        for spin, value in zip(
+            (self.rt_rx_x, self.rt_rx_y, self.rt_rx_z), scene["rx_position"]
+        ):
+            spin.setValue(value)
+
+        # Push explicitly: setValue is a no-op (and emits nothing) when the
+        # spinbox already holds the value, e.g. reloading the same preset.
+        self._rt_push_tx_position()
+        self._rt_push_rx_position()
+
+        # Fallback carrier — _rt_compute_paths overrides this from the active
+        # dataset's fc when one is selected.
+        freq_ghz = scene.get("frequency_ghz")
+        if freq_ghz is not None:
+            try:
+                self.sionna_widget.set_frequency_ghz(float(freq_ghz))
+                if self._active_entry is None:
+                    self.rt_freq_display.setText(f"{float(freq_ghz) * 1e3:.4g}")
+            except Exception as e:
+                print(f"Could not set preset frequency: {e}")
+
+        self.rt_status_label.setText(scene.get("description", scene["name"]))
 
     def _rt_push_max_depth(self, val):
         if self.sionna_widget is not None:

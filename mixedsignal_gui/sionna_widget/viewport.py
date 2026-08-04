@@ -31,6 +31,74 @@ class PlacementMode(Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Display decimation
+# ═══════════════════════════════════════════════════════════════════
+
+#: Total triangles the viewport will draw across all meshes.  Real terrain
+#: scenes (e.g. HCRO at ~1.3 M faces) are far too heavy to draw or ray-cast
+#: at interactive rates, so anything above this budget is simplified for
+#: display and picking.  Sionna always keeps the full-resolution geometry —
+#: this never affects path computation.
+DISPLAY_FACE_BUDGET = 150_000
+
+
+def decimate_mesh(vertices, faces, target_faces):
+    """Simplify a mesh by vertex clustering, preserving overall shape.
+
+    Vertices are snapped to a uniform grid sized so the result lands near
+    *target_faces*; each occupied cell collapses to the centroid of its
+    members, and faces that degenerate as a result are dropped.  Terrain,
+    which is what makes these scenes heavy, is a height field and reduces
+    cleanly this way — unlike face striding, which punches holes.
+
+    Returns ``(vertices, faces)`` unchanged when already within budget.
+    """
+    n_faces = len(faces)
+    if n_faces <= target_faces or n_faces == 0:
+        return vertices, faces
+
+    bmin = vertices.min(axis=0)
+    extent = vertices.max(axis=0) - bmin
+    # A closed surface has roughly two faces per occupied cell.  Spread the
+    # cell budget over the two widest axes: terrain is thin in the third.
+    order = np.argsort(extent)[::-1]
+    area = max(extent[order[0]] * extent[order[1]], 1e-9)
+    cell = max(math.sqrt(area / max(target_faces / 2.0, 1.0)), 1e-6)
+
+    keys = np.floor((vertices - bmin) / cell).astype(np.int64)
+    _, inverse, counts = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True
+    )
+    inverse = inverse.ravel()
+
+    # Cluster representative = centroid of its members.
+    n_clusters = len(counts)
+    new_verts = np.zeros((n_clusters, 3), dtype=np.float64)
+    for axis in range(3):
+        new_verts[:, axis] = np.bincount(
+            inverse, weights=vertices[:, axis], minlength=n_clusters
+        )
+    new_verts /= counts[:, None]
+
+    new_faces = inverse[faces]
+    keep = (
+        (new_faces[:, 0] != new_faces[:, 1])
+        & (new_faces[:, 1] != new_faces[:, 2])
+        & (new_faces[:, 0] != new_faces[:, 2])
+    )
+    new_faces = new_faces[keep]
+    if len(new_faces) == 0:
+        return vertices, faces
+
+    # Drop duplicate triangles.  Match on sorted indices, but index back into
+    # the unsorted array so winding — and therefore normal direction — survives.
+    _, unique_idx = np.unique(np.sort(new_faces, axis=1), axis=0, return_index=True)
+    new_faces = new_faces[unique_idx]
+
+    return new_verts.astype(vertices.dtype), new_faces.astype(np.int32)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Core OpenGL widget
 # ═══════════════════════════════════════════════════════════════════
 
@@ -61,9 +129,13 @@ class SceneGLWidget(QOpenGLWidget):
         self._mouse_button = None
         self._click_threshold = 5
 
-        # Scene meshes: list of (vertices_Nx3, faces_Mx3, color_tuple)
+        # Scene meshes: list of (vertices_Nx3, faces_Mx3, color_tuple).
+        # These are display/picking copies — decimated when the scene exceeds
+        # DISPLAY_FACE_BUDGET.  Sionna keeps the full-resolution geometry.
         self._meshes = []
         self._mesh_bboxes = []
+        # Flattened (positions, normals, color) triples for glDrawArrays
+        self._draw_arrays = []
         self._scene_center = np.array([0.0, 0.0, 0.0])
         self._scene_radius = 100.0
 
@@ -351,19 +423,25 @@ class SceneGLWidget(QOpenGLWidget):
         glEnable(GL_LIGHTING)
 
     def _draw_meshes(self):
-        for vertices, faces, color in self._meshes:
-            glColor3f(*color)
-            glBegin(GL_TRIANGLES)
-            for face in faces:
-                v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
-                n = np.cross(v1 - v0, v2 - v0)
-                nl = np.linalg.norm(n)
-                if nl > 0:
-                    n /= nl
-                glNormal3f(*n)
-                for idx in face:
-                    glVertex3f(*vertices[idx])
-            glEnd()
+        """Draw meshes from the flat arrays precomputed in ``set_meshes``.
+
+        One ``glDrawArrays`` per mesh — an immediate-mode loop over faces
+        cannot keep up once a scene runs to six figures of triangles.
+        """
+        if not self._draw_arrays:
+            return
+
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glEnableClientState(GL_NORMAL_ARRAY)
+        try:
+            for positions, normals, color in self._draw_arrays:
+                glColor3f(*color)
+                glVertexPointer(3, GL_FLOAT, 0, positions)
+                glNormalPointer(GL_FLOAT, 0, normals)
+                glDrawArrays(GL_TRIANGLES, 0, len(positions) // 3)
+        finally:
+            glDisableClientState(GL_NORMAL_ARRAY)
+            glDisableClientState(GL_VERTEX_ARRAY)
 
     # ── Transceiver 3D markers ──────────────────────────
 
@@ -516,11 +594,27 @@ class SceneGLWidget(QOpenGLWidget):
 
     # ── Public API ──────────────────────────────────────
 
+    @staticmethod
+    def _build_draw_arrays(verts, faces, color):
+        """Flatten a mesh into (positions, normals, color) for glDrawArrays.
+
+        Normals are per-face (matching ``glShadeModel(GL_FLAT)``) and
+        replicated across the face's three vertices.
+        """
+        tri = verts[faces].astype(np.float32)          # (F, 3, 3)
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        lengths = np.linalg.norm(n, axis=1, keepdims=True)
+        n = np.divide(n, lengths, out=np.zeros_like(n), where=lengths > 0)
+        normals = np.repeat(n, 3, axis=0).astype(np.float32)
+        return tri.reshape(-1), normals.reshape(-1), color
+
     def set_meshes(self, meshes, bbox_min, bbox_max):
         self._meshes = meshes
         self._mesh_bboxes = []
-        for verts, faces, _ in meshes:
+        self._draw_arrays = []
+        for verts, faces, color in meshes:
             self._mesh_bboxes.append((verts.min(axis=0), verts.max(axis=0)))
+            self._draw_arrays.append(self._build_draw_arrays(verts, faces, color))
 
         self._scene_center = (bbox_min + bbox_max) / 2
         self._scene_radius = float(np.linalg.norm(bbox_max - bbox_min) / 2)
@@ -643,10 +737,27 @@ class SceneGLWidget(QOpenGLWidget):
         self.update()
 
     def wheelEvent(self, event):
-        delta = event.angleDelta().y() / 120.0
-        factor = 0.9 if delta > 0 else 1.1
+        """Zoom the camera, supporting both mouse wheels and trackpads.
+
+        Trackpads (notably on macOS) report fine-grained ``pixelDelta`` and
+        leave ``angleDelta`` at zero; mice report ``angleDelta`` in 1/8-degree
+        steps and no ``pixelDelta``.  Reading whichever is non-zero keeps both
+        working, and bailing out on a zero delta matters: treating "no scroll"
+        as "scroll down" made every event zoom out, leaving no way to zoom in.
+        """
+        pixel_delta = event.pixelDelta().y()
+        angle_delta = event.angleDelta().y()
+        if pixel_delta != 0:
+            steps = pixel_delta / 50.0
+        elif angle_delta != 0:
+            steps = angle_delta / 120.0
+        else:
+            return
+
+        # Continuous factor, so trackpad zoom is smooth rather than stepped.
+        factor = 0.9 ** steps
         self.camera_distance = max(
-            self._scene_radius * 0.1,
+            max(1.0, self._scene_radius * 0.002),
             min(self._scene_radius * 20,
                 self.camera_distance * factor),
         )
@@ -761,15 +872,29 @@ class SimpleViewport(QWidget):
         ]
 
         try:
-            for i, (name, obj) in enumerate(scene.objects.items()):
+            objects = list(scene.objects.items())
+            # Per-mesh cap so one huge terrain tile cannot eat the whole budget
+            per_mesh_cap = max(20_000, DISPLAY_FACE_BUDGET // max(len(objects), 1))
+
+            for i, (name, obj) in enumerate(objects):
                 verts = np.array(
                     obj.mi_mesh.vertex_positions_buffer()
                 ).reshape(-1, 3)
                 faces = np.array(
                     obj.mi_mesh.faces_buffer()
                 ).reshape(-1, 3).astype(np.int32)
-                meshes.append((verts, faces, colors[i % len(colors)]))
+
+                # Bounds come from the full-resolution mesh so camera framing
+                # is unaffected by simplification.
                 all_vertices.append(verts)
+
+                original = len(faces)
+                verts, faces = decimate_mesh(verts, faces, per_mesh_cap)
+                if len(faces) != original:
+                    print(f"Viewport: simplified '{name}' "
+                          f"{original:,} -> {len(faces):,} faces for display")
+
+                meshes.append((verts, faces, colors[i % len(colors)]))
 
             if all_vertices:
                 combined = np.vstack(all_vertices)

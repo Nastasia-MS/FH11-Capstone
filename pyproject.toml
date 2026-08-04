@@ -50,4 +50,10 @@ include = ["mixedsignal_gui*"]
 mixedsignal_gui = [
     "resources/*",
     "waveform_functions/*.m",
+    # Bundled Sionna RT scenes (see sionna_widget/scenes.py)
+    "sionna_widget/hcro/*.xml",
+    "sionna_widget/hcro/meshes/*.ply",
+    "sionna_widget/hcro/textures/*",
+    "sionna_widget/austin/*.xml",
+    "sionna_widget/austin/meshes/*.ply",
 ]
