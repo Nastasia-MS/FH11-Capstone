@@ -173,6 +173,9 @@ class SceneGLWidget(QOpenGLWidget):
         # Paths
         self._path_vertices = None
 
+        # Cached (x, y, world_point) for zoom-toward-cursor
+        self._zoom_focus_cache = None
+
         self.setFocusPolicy(Qt.StrongFocus)
 
     # ── Camera helpers ──────────────────────────────────
@@ -369,7 +372,15 @@ class SceneGLWidget(QOpenGLWidget):
             return None
         return float(np.min(t[valid]))
 
-    def _ray_cast_scene(self, screen_point: QPoint):
+    def _ray_cast_scene(self, screen_point: QPoint, include_ground: bool = True):
+        """World point under *screen_point*, or None.
+
+        ``include_ground`` adds an infinite z = 0 plane behind the meshes.  That
+        is what placement wants — clicking past the terrain should still drop a
+        transmitter on the ground.  Zoom must not use it: the plane is
+        unbounded, so a ray toward the horizon meets it kilometres outside the
+        scene, and anchoring a zoom there flings the camera away.
+        """
         origin, direction = self._screen_to_ray(
             screen_point.x(), screen_point.y()
         )
@@ -390,8 +401,7 @@ class SceneGLWidget(QOpenGLWidget):
             if t is not None and t < best_t:
                 best_t = t
 
-        # Ground-plane fallback (z = 0)
-        if abs(direction[2]) > 1e-7:
+        if include_ground and abs(direction[2]) > 1e-7:
             t_ground = -origin[2] / direction[2]
             if 0 < t_ground < best_t:
                 best_t = t_ground
@@ -634,6 +644,7 @@ class SceneGLWidget(QOpenGLWidget):
         self._meshes = meshes
         self._mesh_bboxes = []
         self._draw_arrays = []
+        self._zoom_focus_cache = None
         for verts, faces, color in meshes:
             self._mesh_bboxes.append((verts.min(axis=0), verts.max(axis=0)))
             self._draw_arrays.append(self._build_draw_arrays(verts, faces, color))
@@ -759,38 +770,36 @@ class SceneGLWidget(QOpenGLWidget):
         self.update()
 
     def _cursor_focus_point(self, cursor_pos):
-        """World point under the cursor, for zooming toward what you point at.
+        """World point under the cursor — the surface actually being pointed at.
 
-        Intersects the cursor ray with the plane through ``camera_target``
-        whose normal is the view direction.  Deliberately not a mesh raycast:
-        ``_ray_cast_scene`` costs milliseconds across the display mesh, and
-        scroll events arrive at 60-120 Hz.
+        Reuses ``_ray_cast_scene`` (the same picking used by click-to-place, so
+        zoom converges exactly where a click would land).  An earlier version
+        intersected a plane through ``camera_target`` instead, which is cheaper
+        but wrong for large scenes: viewed from kilometres away the ray crosses
+        that plane far from the terrain under the cursor, so zoom drifted off
+        to one side.
 
-        Returns None when the geometry is degenerate, in which case the caller
+        The result is cached while the cursor holds still, which is the normal
+        case during a scroll gesture, so the raycast runs about once per
+        gesture rather than once per event.
+
+        Only real geometry counts — ``include_ground=False``.  With the infinite
+        ground plane enabled a ray toward the horizon returns a point kilometres
+        outside the scene, and zooming toward that hurls the camera sideways.
+        Returns None when the cursor is not over the model, and the caller then
         falls back to zooming toward the scene centre.
         """
+        x, y = cursor_pos.x(), cursor_pos.y()
+        cached = self._zoom_focus_cache
+        if cached is not None and abs(cached[0] - x) < 2 and abs(cached[1] - y) < 2:
+            return cached[2]
+
         try:
-            origin, direction = self._screen_to_ray(cursor_pos.x(), cursor_pos.y())
+            hit = self._ray_cast_scene(QPoint(int(x), int(y)), include_ground=False)
         except Exception:
-            return None
-
-        t = self.camera_target
-        target = np.array([t.x(), t.y(), t.z()], dtype=np.float64)
-
-        cam = self._get_camera_pos()
-        view = target - np.array([cam.x(), cam.y(), cam.z()], dtype=np.float64)
-        norm = np.linalg.norm(view)
-        if norm < 1e-9:
-            return None
-        normal = view / norm
-
-        denom = float(np.dot(direction, normal))
-        if abs(denom) < 1e-9:            # ray parallel to the plane
-            return None
-        d = float(np.dot(target - origin, normal)) / denom
-        if d <= 0:                       # plane is behind the camera
-            return None
-        return origin + direction * d
+            hit = None
+        self._zoom_focus_cache = (x, y, hit)
+        return hit
 
     def _zoom_by(self, notches, cursor_pos=None):
         """Zoom by *notches* wheel steps, optionally anchored at the cursor.
@@ -884,6 +893,8 @@ class SceneGLWidget(QOpenGLWidget):
         dy = pos.y() - self._last_mouse_pos.y()
         self.camera_yaw -= dx * 0.3
         self.camera_pitch = max(-89, min(89, self.camera_pitch + dy * 0.3))
+        # A screen position now maps to a different world point.
+        self._zoom_focus_cache = None
 
     def _do_pan(self, pos):
         dx = pos.x() - self._last_mouse_pos.x()
@@ -895,6 +906,7 @@ class SceneGLWidget(QOpenGLWidget):
         speed = self.camera_distance * 0.002
         pan = right * (-dx * speed) + self.camera_up * (dy * speed)
         self.camera_target += pan
+        self._zoom_focus_cache = None
 
 
 # ═══════════════════════════════════════════════════════════════════
