@@ -1,11 +1,14 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QComboBox, QFrame, QScrollArea,
                                QSlider, QTabWidget, QDoubleSpinBox, QSpinBox,
-                               QDialog, QCheckBox, QGridLayout, QLineEdit)
+                               QDialog, QCheckBox, QGridLayout, QLineEdit,
+                               QMessageBox)
 from PySide6.QtCore import Qt
 
 from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
+from mixedsignal_gui.widgets.modulation_utils import (mark_unavailable_modulations,
+                                                     selected_modulation)
 import numpy as np
 from datetime import datetime
 
@@ -341,6 +344,7 @@ class WaveformSelectionTab(QWidget):
         self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
                                           "LFM", "Barker", "FMCW",
                                           "WiFi", "LTE", "5G_NR"])
+        mark_unavailable_modulations(self.waveform_combo, self.matlab)
         layout.addWidget(self.waveform_combo)
 
         # fs
@@ -564,7 +568,15 @@ class WaveformSelectionTab(QWidget):
 
     
     def generate_dataset(self):
-        modulation = self.waveform_combo.currentText()
+        """Generate one waveform and refresh the plots.
+
+        Everything is wrapped so a failure reaches the user as a dialog.  Qt
+        swallows exceptions raised inside a clicked-slot — it prints a
+        traceback to the terminal and carries on — so without this an
+        unsupported waveform (WiFi without MATLAB, say) looked like the button
+        simply did nothing.
+        """
+        modulation = selected_modulation(self.waveform_combo)
         M = self.M
         fs = self.fs            # Hz
         Tsymb = self.Tsymb      # seconds
@@ -575,31 +587,40 @@ class WaveformSelectionTab(QWidget):
         var = self.var
         pulse_shape = self.pulse_shape_combo.currentText()
 
-        # Enforce Nyquist
-        if fc >= fs / 2:
-            raise ValueError(f"Invalid parameters: fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
+        try:
+            # Enforce Nyquist
+            if fc >= fs / 2:
+                raise ValueError(f"Invalid parameters: fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
 
-        # Validate: fs * Tsymb must be an integer (samples per symbol)
-        sps = fs * Tsymb
-        if abs(sps - round(sps)) > 1e-9:
-            raise ValueError(f"Invalid parameters: fs * Tsymb = {sps:.6f} must be an integer (samples per symbol)")
+            # Validate: fs * Tsymb must be an integer (samples per symbol)
+            sps = fs * Tsymb
+            if abs(sps - round(sps)) > 1e-9:
+                raise ValueError(f"Invalid parameters: fs * Tsymb = {sps:.6f} must be an integer (samples per symbol)")
 
-        from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
-        pipeline = WaveformPipeline(self.matlab)
+            from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
+            pipeline = WaveformPipeline(self.matlab)
 
-        result = pipeline.generate(
-            fs=fs,
-            Tsymb=Tsymb,
-            Nsymb=Nsymb,
-            fc=fc,
-            M=M,
-            modulation=modulation,
-            var=var,
-            alpha=alpha,
-            span=span,
-            pulse_shape=pulse_shape,
-            output_type=self.output_type
-        )
+            result = pipeline.generate(
+                fs=fs,
+                Tsymb=Tsymb,
+                Nsymb=Nsymb,
+                fc=fc,
+                M=M,
+                modulation=modulation,
+                var=var,
+                alpha=alpha,
+                span=span,
+                pulse_shape=pulse_shape,
+                output_type=self.output_type
+            )
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Parameters", str(e))
+            return
+        except Exception as e:
+            QMessageBox.critical(
+                self, f"Cannot generate {modulation}",
+                f"Waveform generation failed:\n\n{e}")
+            return
 
         self.current_data = result["signal"]
         self.current_fs = fs
@@ -677,6 +698,7 @@ class WaveformSelectionTab(QWidget):
         
         count_train = 0
         count_test = 0
+        failures = {}          # modulation -> first error seen
         print(f"Starting batch generation with train/test split (75%/25%): {total} total samples")
 
         for modulation in modulations:
@@ -745,11 +767,27 @@ class WaveformSelectionTab(QWidget):
 
                     except Exception as e:
                         print(f"X Error generating {modulation} M={M}: {e}")
+                        # Keep one reason per modulation for the summary dialog;
+                        # a failing class usually fails identically every sample.
+                        failures.setdefault(modulation, str(e))
 
         total_saved = count_train + count_test
         print(f"Batch complete: {total_saved}/{total} datasets saved")
         print(f"  Training set: {count_train} samples")
         print(f"  Test set: {count_test} samples")
+
+        # Report in the GUI too.  Previously the only sign that a class had
+        # failed was a line on stdout, so a run that quietly dropped WiFi/LTE/
+        # 5G_NR looked like a complete success.
+        summary = (f"Saved {total_saved} of {total} samples.\n"
+                   f"Training set: {count_train}    Test set: {count_test}")
+        if failures:
+            detail = "\n".join(f"\n• {mod}\n    {reason}" for mod, reason in failures.items())
+            QMessageBox.warning(
+                self, "Batch generation finished with skipped classes",
+                f"{summary}\n\n{len(failures)} modulation(s) produced no data:\n{detail}")
+        else:
+            QMessageBox.information(self, "Batch generation complete", summary)
 
     def generate_quick_test_data(self):
         """Generate small test datasets quickly for ML model validation."""

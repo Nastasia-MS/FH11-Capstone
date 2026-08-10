@@ -7,41 +7,11 @@ import numpy as np
 from scipy import signal
 
 
-def rcosdesign(alpha, span, sps):
-    """
-    Pure-Python root raised cosine (RRC) filter design.
-
-    Equivalent to MATLAB's ``rcosdesign(alpha, span, sps, 'sqrt')``.
-
-    Returns a 1-D unit-energy filter array of length ``span * sps + 1``.
-    """
-    N = span * sps
-    n = np.arange(-N // 2, N // 2 + 1, dtype=float)
-    t = n / sps  # normalised time in symbol periods
-
-    h = np.zeros_like(t)
-
-    for i, ti in enumerate(t):
-        if ti == 0.0:
-            h[i] = 1.0 - alpha + 4.0 * alpha / np.pi
-        elif alpha != 0.0 and abs(abs(ti) - 1.0 / (4.0 * alpha)) < 1e-12:
-            h[i] = (alpha / np.sqrt(2.0)) * (
-                (1.0 + 2.0 / np.pi) * np.sin(np.pi / (4.0 * alpha))
-                + (1.0 - 2.0 / np.pi) * np.cos(np.pi / (4.0 * alpha))
-            )
-        else:
-            num = np.sin(np.pi * ti * (1.0 - alpha)) + 4.0 * alpha * ti * np.cos(np.pi * ti * (1.0 + alpha))
-            den = np.pi * ti * (1.0 - (4.0 * alpha * ti) ** 2)
-            if abs(den) < 1e-30:
-                h[i] = 0.0
-            else:
-                h[i] = num / den
-
-    energy = np.sqrt(np.sum(h ** 2))
-    if energy > 0:
-        h = h / energy
-
-    return h
+# The RRC design lives with the generators that build waveforms from it, so
+# there is a single implementation shared by generation and demodulation.
+# Re-exported here because this module's own demodulator uses it and callers
+# have historically imported it from this path.
+from mixedsignal_gui.backend.generators import rcosdesign  # noqa: F401
 
 
 def demodulate_to_symbols(data, fs, fc, sps, alpha=0.35, span=8,

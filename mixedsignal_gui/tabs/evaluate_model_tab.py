@@ -15,6 +15,8 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlot, IQDomainPlot, SpectrogramPlot, _theme_toolbar
 from mixedsignal_gui.widgets.toggle_switch import ToggleSwitch
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
+from mixedsignal_gui.widgets.modulation_utils import (mark_unavailable_modulations,
+                                                     selected_modulation)
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift)
 
@@ -142,6 +144,7 @@ class EvaluateModelTab(QWidget):
         self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
                                           "LFM", "Barker", "FMCW",
                                           "WiFi", "LTE", "5G_NR"])
+        mark_unavailable_modulations(self.waveform_combo, self.eng)
         self.waveform_combo.currentTextChanged.connect(self._on_waveform_changed)
         layout.addWidget(self.waveform_combo)
 
@@ -602,6 +605,9 @@ class EvaluateModelTab(QWidget):
 
     def _on_waveform_changed(self, modulation):
         """Update parameter spin-boxes with sensible defaults for the selected waveform."""
+        # currentTextChanged delivers the displayed label, which may carry the
+        # "(needs MATLAB)" annotation; presets are keyed on the bare name.
+        modulation = modulation.split()[0] if modulation else modulation
         preset = self._WAVEFORM_PRESETS.get(modulation, {})
         if not preset:
             return
@@ -620,7 +626,7 @@ class EvaluateModelTab(QWidget):
     # ------------------------------------------------------------------
 
     def generate_and_classify(self):
-        modulation = self.waveform_combo.currentText()
+        modulation = selected_modulation(self.waveform_combo)
         fs = float(self.fs)
         tsymb = float(self.Tsymb)
         fc = float(self.fc)

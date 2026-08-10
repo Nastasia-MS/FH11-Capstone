@@ -83,14 +83,26 @@ _BARKER_CODES = {
 #: LTE / 5G toolboxes; a hand-rolled lookalike would train a classifier that
 #: scores well on our own synthetic data and fails on real captures, so they
 #: are refused outright rather than approximated.
-_MATLAB_ONLY = {
+MATLAB_ONLY_MODULATIONS = {
     "WiFi":  "WLAN Toolbox (802.11ax HE-SU)",
     "LTE":   "LTE Toolbox (downlink RMC)",
     "5G_NR": "5G Toolbox (NR downlink)",
 }
 
 
-def rrc_filter(alpha: float, span: int, sps: int) -> np.ndarray:
+def unavailable_modulations(matlab_engine) -> dict:
+    """Modulations that cannot be generated right now, mapped to the reason.
+
+    Empty when MATLAB is running.  Kept here rather than in the tabs so the
+    "what can this engine actually produce" rule lives next to the generators
+    that enforce it, and both the Waveform and Evaluate Model tabs agree.
+    """
+    if matlab_engine is not None and getattr(matlab_engine, "is_available", lambda: False)():
+        return {}
+    return dict(MATLAB_ONLY_MODULATIONS)
+
+
+def rcosdesign(alpha: float, span: int, sps: int) -> np.ndarray:
     """Root-raised-cosine taps, equivalent to MATLAB ``rcosdesign(...,'sqrt')``.
 
     Returns ``span*sps + 1`` taps normalised to unit energy.  The closed form
@@ -137,7 +149,7 @@ class PythonWaveformGenerator:
     Used automatically when the MATLAB engine is unavailable (see
     ``Waveform._ensure_generator``).  MATLAB remains the reference
     implementation; this covers the eight waveforms that are defined by
-    closed-form maths.  WiFi / LTE / 5G_NR are refused — see ``_MATLAB_ONLY``.
+    closed-form maths.  WiFi / LTE / 5G_NR are refused — see ``MATLAB_ONLY_MODULATIONS``.
 
     Structure deliberately mirrors the ``.m`` file (samples-per-symbol, filter
     delay, symbol count, pulse shaping, trim, optional upconversion) so the two
@@ -276,10 +288,10 @@ class PythonWaveformGenerator:
 
     def generate(self, cfg) -> np.ndarray:
         modulation = cfg.modulation
-        if modulation in _MATLAB_ONLY:
+        if modulation in MATLAB_ONLY_MODULATIONS:
             raise RuntimeError(
                 f"{modulation} waveforms require MATLAB and the "
-                f"{_MATLAB_ONLY[modulation]}. The Python generator covers "
+                f"{MATLAB_ONLY_MODULATIONS[modulation]}. The Python generator covers "
                 "PAM, QAM, PSK, FSK, FHSS, LFM, Barker and FMCW; it cannot "
                 f"synthesise standards-compliant {modulation} frames."
             )
@@ -310,7 +322,7 @@ class PythonWaveformGenerator:
         from scipy.signal import upfirdn
 
         if cfg.pulse_shape == "rrc":
-            h = rrc_filter(cfg.alpha, cfg.span, sps)
+            h = rcosdesign(cfg.alpha, cfg.span, sps)
             filter_delay = cfg.span * sps // 2
         else:
             h = np.ones(sps) / np.sqrt(sps)
