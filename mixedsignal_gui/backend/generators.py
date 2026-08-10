@@ -177,14 +177,28 @@ class PythonWaveformGenerator:
             return symbols / np.sqrt(np.mean(np.abs(symbols) ** 2))
 
         if modulation == "QAM":
-            side = int(round(np.sqrt(M)))
-            if side * side != M:
-                raise ValueError(f"QAM requires a square M, got {M}")
-            levels = 2 * np.arange(side) - (side - 1)
-            i_part = levels[data % side]
-            q_part = levels[data // side]
-            symbols = i_part + 1j * q_part
-            return symbols / np.sqrt(np.mean(np.abs(symbols) ** 2))
+            # Square when M is an even power of two (4, 16, 64...), otherwise
+            # rectangular with twice as many I levels as Q (8, 32, 128...).
+            # WaveformConfig accepts any power of two >= 4, so refusing the
+            # non-square cases here would reject input the validator allows.
+            #
+            # Caveat: MATLAB's qammod is rectangular for M=8 (so we agree) but
+            # uses a *cross* constellation for M=32/128, where this differs.
+            # The square cases — the defaults everywhere in the app — match.
+            bits = int(round(np.log2(M)))
+            i_bits = (bits + 1) // 2
+            q_bits = bits - i_bits
+            n_i, n_q = 1 << i_bits, 1 << q_bits
+            i_levels = 2 * np.arange(n_i) - (n_i - 1)
+            q_levels = 2 * np.arange(n_q) - (n_q - 1)
+            symbols = i_levels[data % n_i] + 1j * q_levels[data // n_i]
+
+            # Normalise by the exact constellation power, matching qammod's
+            # 'UnitAveragePower'.  Dividing by the *sample* mean instead (as
+            # the .m does for PAM) would make the scale depend on the random
+            # draw — around 0.1% jitter run to run, and not what MATLAB does.
+            mean_power = np.mean(i_levels ** 2) + np.mean(q_levels ** 2)
+            return symbols / np.sqrt(mean_power)
 
         if modulation == "PSK":
             return np.exp(2j * np.pi * data / M)

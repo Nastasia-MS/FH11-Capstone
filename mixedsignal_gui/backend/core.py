@@ -77,7 +77,13 @@ class WaveformConfig:
 
     @property
     def sps(self) -> int:
-        return int(self.fs * self.Tsymb)
+        # round(), not int(), to match `sps = round(fs * Tsymb)` in
+        # waveform_generator.m.  _validate() only requires the product to be
+        # within 1e-9 of an integer, and floating point routinely lands just
+        # below one: the UI's fs=0.10 MHz, Tsymb=10.00 us gives
+        # 0.9999999999999999, which int() truncates to 0 — an empty waveform,
+        # and a zero output_len handed to MATLAB.
+        return int(round(self.fs * self.Tsymb))
 
     @property
     def output_len(self) -> int:
