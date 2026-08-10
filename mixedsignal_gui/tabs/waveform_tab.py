@@ -605,6 +605,8 @@ class WaveformSelectionTab(QWidget):
         self.current_fs = fs
         self.current_modulation = modulation
         self.current_baseband_symbols = result.get("baseband_symbols")
+        # Carried to save_to_dataset_manager(), which runs in a separate method
+        self.current_generator = result.get("generator")
 
         self.update_waveform_plots()
 
@@ -631,6 +633,7 @@ class WaveformSelectionTab(QWidget):
             'pulse_shape': self.pulse_shape_combo.currentText(),
             'output_type': self.output_type,
             'timestamp':   timestamp,
+            'generator':   getattr(self, 'current_generator', None),
         }
 
         self.dataset_manager.save(name, self.current_data, metadata)
@@ -726,6 +729,7 @@ class WaveformSelectionTab(QWidget):
                             "span":        self.span,
                             "pulse_shape": self.pulse_shape_combo.currentText(),
                             "timestamp":   timestamp,
+                            "generator":   result.get("generator"),
                         }
 
                         self.dataset_manager.save(name, data, metadata)
@@ -801,6 +805,7 @@ class WaveformSelectionTab(QWidget):
                         "span":        self.span,
                         "pulse_shape": self.pulse_shape_combo.currentText(),
                         "timestamp":   timestamp,
+                        "generator":   result.get("generator"),
                     }
                     
                     self.dataset_manager.save(name, data, metadata)

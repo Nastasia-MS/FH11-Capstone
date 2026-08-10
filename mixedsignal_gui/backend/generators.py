@@ -6,7 +6,7 @@ class MATLABWaveformGenerator:
 
     def __init__(self, matlab_engine: Optional[object]):
         self.matlab_engine = matlab_engine
-        self.last_metadata = {}
+        self.last_metadata = {"generator": "matlab"}
 
     def _matlab_to_numpy(self, data):
         if getattr(data, 'is_complex', False):
@@ -23,7 +23,7 @@ class MATLABWaveformGenerator:
         from mixedsignal_gui.backend.core import WaveformConfig
 
         eng = self.matlab_engine.eng
-        self.last_metadata = {}
+        self.last_metadata = {"generator": "matlab"}
 
         # Modulations that return symbols as a second output
         symbol_mods = {"PAM", "QAM", "PSK"}
@@ -60,3 +60,279 @@ class MATLABWaveformGenerator:
             )
 
         return self._matlab_to_numpy(data)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Pure-Python generator
+# ═══════════════════════════════════════════════════════════════════
+
+#: Standard Barker sequences, keyed by length.  Used by the phase-coded
+#: radar pulse; these are the only lengths for which Barker codes exist.
+_BARKER_CODES = {
+    2:  [+1, -1],
+    3:  [+1, +1, -1],
+    4:  [+1, +1, -1, +1],
+    5:  [+1, +1, +1, -1, +1],
+    7:  [+1, +1, +1, -1, -1, +1, -1],
+    11: [+1, +1, +1, -1, -1, -1, +1, -1, -1, +1, -1],
+    13: [+1, +1, +1, +1, +1, -1, -1, +1, +1, -1, +1, -1, +1],
+}
+
+#: Waveforms that are real communication standards rather than closed-form
+#: maths.  MATLAB builds genuine protocol frames for these via its WLAN /
+#: LTE / 5G toolboxes; a hand-rolled lookalike would train a classifier that
+#: scores well on our own synthetic data and fails on real captures, so they
+#: are refused outright rather than approximated.
+_MATLAB_ONLY = {
+    "WiFi":  "WLAN Toolbox (802.11ax HE-SU)",
+    "LTE":   "LTE Toolbox (downlink RMC)",
+    "5G_NR": "5G Toolbox (NR downlink)",
+}
+
+
+def rrc_filter(alpha: float, span: int, sps: int) -> np.ndarray:
+    """Root-raised-cosine taps, equivalent to MATLAB ``rcosdesign(...,'sqrt')``.
+
+    Returns ``span*sps + 1`` taps normalised to unit energy.  The closed form
+    is singular at ``t = 0`` and ``t = +/- Ts/(4*alpha)``; both limits are
+    substituted analytically rather than nudged, so the taps stay exact.
+    """
+    n = np.arange(-span * sps / 2.0, span * sps / 2.0 + 1)
+    t = n / float(sps)                      # time in symbol periods
+    h = np.zeros_like(t, dtype=np.float64)
+
+    if alpha == 0:
+        # Degenerates to a sinc; still normalised to unit energy so that
+        # signal power does not jump when alpha is dialled down to zero.
+        h = np.sinc(t)
+        return h / np.sqrt(np.sum(h ** 2))
+
+    # Singular points
+    at_zero = np.isclose(t, 0.0)
+    at_quarter = np.isclose(np.abs(t), 1.0 / (4.0 * alpha))
+    regular = ~(at_zero | at_quarter)
+
+    h[at_zero] = 1.0 - alpha + 4.0 * alpha / np.pi
+
+    if np.any(at_quarter):
+        h[at_quarter] = (alpha / np.sqrt(2.0)) * (
+            (1.0 + 2.0 / np.pi) * np.sin(np.pi / (4.0 * alpha))
+            + (1.0 - 2.0 / np.pi) * np.cos(np.pi / (4.0 * alpha))
+        )
+
+    tr = t[regular]
+    numerator = (
+        np.sin(np.pi * tr * (1.0 - alpha))
+        + 4.0 * alpha * tr * np.cos(np.pi * tr * (1.0 + alpha))
+    )
+    denominator = np.pi * tr * (1.0 - (4.0 * alpha * tr) ** 2)
+    h[regular] = numerator / denominator
+
+    return h / np.sqrt(np.sum(h ** 2))
+
+
+class PythonWaveformGenerator:
+    """NumPy/SciPy implementation of ``waveform_functions/waveform_generator.m``.
+
+    Used automatically when the MATLAB engine is unavailable (see
+    ``Waveform._ensure_generator``).  MATLAB remains the reference
+    implementation; this covers the eight waveforms that are defined by
+    closed-form maths.  WiFi / LTE / 5G_NR are refused — see ``_MATLAB_ONLY``.
+
+    Structure deliberately mirrors the ``.m`` file (samples-per-symbol, filter
+    delay, symbol count, pulse shaping, trim, optional upconversion) so the two
+    can be compared side by side.
+    """
+
+    def __init__(self, seed: Optional[int] = None):
+        self.rng = np.random.default_rng(seed)
+        self.last_metadata = {"generator": "python"}
+
+    # -- helpers ---------------------------------------------------------
+
+    def _symbols(self, num_symbols: int, M: int, modulation: str) -> np.ndarray:
+        """Random unit-average-power symbols.
+
+        Gray coding is intentionally not reproduced: the data is uniform over
+        0..M-1, so any bijection onto the constellation gives an identically
+        distributed signal.  Only the constellation geometry and the power
+        normalisation affect the waveform.
+        """
+        data = self.rng.integers(0, M, size=num_symbols)
+
+        if modulation == "PAM":
+            symbols = (2.0 * data - (M - 1)).astype(np.float64)
+            return symbols / np.sqrt(np.mean(np.abs(symbols) ** 2))
+
+        if modulation == "QAM":
+            side = int(round(np.sqrt(M)))
+            if side * side != M:
+                raise ValueError(f"QAM requires a square M, got {M}")
+            levels = 2 * np.arange(side) - (side - 1)
+            i_part = levels[data % side]
+            q_part = levels[data // side]
+            symbols = i_part + 1j * q_part
+            return symbols / np.sqrt(np.mean(np.abs(symbols) ** 2))
+
+        if modulation == "PSK":
+            return np.exp(2j * np.pi * data / M)
+
+        raise ValueError(f"Unsupported modulation type: {modulation}")
+
+    @staticmethod
+    def _upconvert(sig_bb: np.ndarray, fs: float, fc: float, output_len: int) -> np.ndarray:
+        """Quadrature upconversion: s(t) = I*cos(wc t) - Q*sin(wc t)."""
+        sig_bb = sig_bb[:output_len]
+        t = np.arange(output_len) / fs
+        return (np.real(sig_bb) * np.cos(2 * np.pi * fc * t)
+                - np.imag(sig_bb) * np.sin(2 * np.pi * fc * t))
+
+    def _hopping_signal(self, output_len, fs, sps, freq_offsets) -> np.ndarray:
+        """Continuous-phase complex baseband from per-interval frequency offsets.
+
+        Phase carries across interval boundaries, which is what makes FSK/FHSS
+        continuous-phase rather than a sequence of restarted tones.
+        """
+        sig = np.zeros(output_len, dtype=np.complex128)
+        phase = 0.0
+        idx = 0
+        for f_offset in freq_offsets:
+            n = min(sps, output_len - idx)
+            if n <= 0:
+                break
+            step = 2 * np.pi * f_offset / fs
+            phases = phase + step * np.arange(n)
+            sig[idx:idx + n] = np.exp(1j * phases)
+            phase = (phase + step * n) % (2 * np.pi)
+            idx += n
+        return sig
+
+    # -- waveform families ----------------------------------------------
+
+    def _fsk(self, cfg, sps, output_len) -> np.ndarray:
+        freq_sep = 1.0 / cfg.Tsymb
+        data = self.rng.integers(0, cfg.M, size=int(np.ceil(output_len / sps)))
+        return self._hopping_signal(
+            output_len, cfg.fs, sps, (data - (cfg.M - 1) / 2.0) * freq_sep)
+
+    def _fhss(self, cfg, sps, output_len) -> np.ndarray:
+        channel_spacing = cfg.fs / (2.0 * cfg.M)
+        hops = self.rng.integers(0, cfg.M, size=int(np.ceil(output_len / sps)))
+        return self._hopping_signal(
+            output_len, cfg.fs, sps, (hops - (cfg.M - 1) / 2.0) * channel_spacing)
+
+    def _lfm(self, cfg, output_len) -> np.ndarray:
+        """Pulsed linear-FM chirp, matching the .m's sweep/PRI derivation."""
+        fs = cfg.fs
+        sweep_bw = cfg.M * fs / 8.0
+        pulse_width = min(cfg.Tsymb * 20.0, (output_len - 1) / fs)
+        pulse_samples = max(int(round(pulse_width * fs)), 1)
+        pri_samples = max(int(round(pulse_samples * 1.5)), pulse_samples + 1)
+
+        t = np.arange(pulse_samples) / fs
+        pulse = np.exp(1j * np.pi * (sweep_bw / (pulse_samples / fs)) * t ** 2)
+
+        sig = np.zeros(output_len, dtype=np.complex128)
+        for start in range(0, output_len, pri_samples):
+            n = min(pulse_samples, output_len - start)
+            sig[start:start + n] = pulse[:n]
+        return sig
+
+    def _barker(self, cfg, output_len) -> np.ndarray:
+        """Phase-coded pulse; M snaps to the nearest valid Barker length."""
+        fs = cfg.fs
+        lengths = np.array(sorted(_BARKER_CODES))
+        num_chips = int(lengths[np.argmin(np.abs(lengths - cfg.M))])
+        code = np.array(_BARKER_CODES[num_chips], dtype=np.float64)
+
+        chip_width = min(cfg.Tsymb, (output_len - 1) / (fs * num_chips))
+        chip_samples = max(int(round(chip_width * fs)), 1)
+        pulse = np.repeat(code, chip_samples).astype(np.complex128)
+
+        pri_samples = max(int(round(len(pulse) * 1.5)), len(pulse) + 1)
+        sig = np.zeros(output_len, dtype=np.complex128)
+        for start in range(0, output_len, pri_samples):
+            n = min(len(pulse), output_len - start)
+            sig[start:start + n] = pulse[:n]
+        return sig
+
+    def _fmcw(self, cfg, output_len) -> np.ndarray:
+        """Continuous triangle-swept FM."""
+        fs = cfg.fs
+        sweep_bw = cfg.M * fs / 8.0
+        sweep_time = min(cfg.Tsymb * 50.0, (output_len - 1) / fs)
+        sweep_samples = max(int(round(sweep_time * fs)), 1)
+
+        # Triangle: sweep up over one period, back down over the next.
+        up = np.linspace(-sweep_bw / 2, sweep_bw / 2, sweep_samples, endpoint=False)
+        freq = np.concatenate([up, up[::-1]])
+        reps = int(np.ceil(output_len / len(freq)))
+        freq = np.tile(freq, reps)[:output_len]
+
+        phase = 2 * np.pi * np.cumsum(freq) / fs
+        return np.exp(1j * phase)
+
+    # -- entry point -----------------------------------------------------
+
+    def generate(self, cfg) -> np.ndarray:
+        modulation = cfg.modulation
+        if modulation in _MATLAB_ONLY:
+            raise RuntimeError(
+                f"{modulation} waveforms require MATLAB and the "
+                f"{_MATLAB_ONLY[modulation]}. The Python generator covers "
+                "PAM, QAM, PSK, FSK, FHSS, LFM, Barker and FMCW; it cannot "
+                f"synthesise standards-compliant {modulation} frames."
+            )
+
+        self.last_metadata = {"generator": "python"}
+
+        sps = cfg.sps
+        output_len = cfg.output_len
+        baseband = cfg.output_type.lower() == "baseband"
+
+        # Frequency/phase waveforms bypass pulse shaping and produce no symbols
+        if modulation in ("FSK", "FHSS", "LFM", "Barker", "FMCW"):
+            builder = {
+                "FSK": lambda: self._fsk(cfg, sps, output_len),
+                "FHSS": lambda: self._fhss(cfg, sps, output_len),
+                "LFM": lambda: self._lfm(cfg, output_len),
+                "Barker": lambda: self._barker(cfg, output_len),
+                "FMCW": lambda: self._fmcw(cfg, output_len),
+            }[modulation]
+            sig_bb = builder()
+            if baseband:
+                return sig_bb.astype(np.complex128)
+            # FSK/FHSS upconvert by adding the carrier to the running phase in
+            # the .m; quadrature upconversion of the same baseband is equivalent.
+            return self._upconvert(sig_bb, cfg.fs, cfg.fc, output_len)
+
+        # -- linear modulations: symbols -> pulse shaping -> trim ---------
+        from scipy.signal import upfirdn
+
+        if cfg.pulse_shape == "rrc":
+            h = rrc_filter(cfg.alpha, cfg.span, sps)
+            filter_delay = cfg.span * sps // 2
+        else:
+            h = np.ones(sps) / np.sqrt(sps)
+            filter_delay = 0
+
+        num_symbols = int(np.ceil((output_len + 2 * filter_delay) / sps))
+        symbols = self._symbols(num_symbols, cfg.M, modulation)
+        self.last_metadata["baseband_symbols"] = symbols
+
+        # NOTE argument order: SciPy is upfirdn(h, x, up, down); MATLAB is
+        # upfirdn(x, h, p, q).  Swapping these fails silently.
+        sig_bb = upfirdn(h, symbols, up=sps, down=1)
+
+        # Trim off the filter's group delay, zero-padding if the filtered
+        # signal is short (mirrors `sig_bb(end_idx) = 0` in the .m).
+        end_idx = filter_delay + output_len
+        if end_idx > len(sig_bb):
+            sig_bb = np.pad(sig_bb, (0, end_idx - len(sig_bb)))
+        sig_bb = sig_bb[filter_delay:end_idx]
+
+        if baseband:
+            # Complex even for PAM, which is real-valued: downstream code
+            # branches on dtype to decide baseband vs passband.
+            return sig_bb.astype(np.complex128)
+        return self._upconvert(sig_bb, cfg.fs, cfg.fc, output_len)

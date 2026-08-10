@@ -125,11 +125,22 @@ class Waveform:
         self._metadata = {}
 
     def _ensure_generator(self):
+        """Pick a generator: MATLAB when it is usable, otherwise pure Python.
+
+        MATLAB stays the reference implementation, so it wins whenever the
+        engine is running.  An explicitly injected ``generator_impl`` always
+        takes precedence, which is how callers and tests force one or the other.
+        """
         if self._generator is not None:
             return
-        from mixedsignal_gui.backend.generators import MATLABWaveformGenerator
 
-        self._generator = MATLABWaveformGenerator(self.matlab_engine)
+        engine = self.matlab_engine
+        if engine is not None and getattr(engine, "is_available", lambda: False)():
+            from mixedsignal_gui.backend.generators import MATLABWaveformGenerator
+            self._generator = MATLABWaveformGenerator(engine)
+        else:
+            from mixedsignal_gui.backend.generators import PythonWaveformGenerator
+            self._generator = PythonWaveformGenerator()
 
     def generate(self) -> np.ndarray:
         self._ensure_generator()

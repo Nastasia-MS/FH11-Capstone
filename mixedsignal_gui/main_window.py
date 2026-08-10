@@ -391,7 +391,9 @@ class SignalDashboard(QMainWindow):
             self.matlab.add_path(waveform_path)
             print(f"MATLAB engine ready. Waveform path added: {waveform_path}")
         else:
-            print("MATLAB engine unavailable — waveform generation will be disabled. Install MATLAB and the MATLAB Engine for Python, or call MatlabEngine.start() to try starting it.")
+            print("MATLAB engine unavailable — falling back to the built-in Python "
+                  "waveform generator (PAM, QAM, PSK, FSK, FHSS, LFM, Barker, FMCW). "
+                  "WiFi/LTE/5G_NR still require MATLAB and their respective toolboxes.")
         
         # Initialize Dataset Manager (shared across tabs)
         print("Initializing Dataset Manager...")

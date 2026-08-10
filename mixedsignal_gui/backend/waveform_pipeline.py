@@ -45,4 +45,7 @@ class WaveformPipeline:
             "spectrum": np.abs(ft),
             "sps": sps,
             "baseband_symbols": waveform.metadata.get("baseband_symbols"),
+            # "matlab" or "python" — recorded in dataset metadata so a mixed
+            # datasets/ folder stays traceable to how each signal was made.
+            "generator": waveform.metadata.get("generator"),
         }
