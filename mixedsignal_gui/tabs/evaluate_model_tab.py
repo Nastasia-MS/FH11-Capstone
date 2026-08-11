@@ -722,19 +722,36 @@ class EvaluateModelTab(QWidget):
         from mixedsignal_gui.backend.trainer import TrainerThread
         target_len = TrainerThread.TARGET_LENGTH
 
-        raw = np.asarray(data, dtype=np.float32).ravel()
+        # Keep the native dtype: casting to float32 here used to discard Q
+        # before the IQ branch could ever see it.
+        raw = np.asarray(data).ravel()
         if len(raw) > target_len:
             raw = raw[:target_len]
         elif len(raw) < target_len:
             raw = np.pad(raw, (0, target_len - len(raw)))
 
-        is_iq = (self.model_metadata or {}).get('model_name', '') in IQ_MODELS
-        if is_iq:
-            X = raw[np.newaxis, :]  # (1, L)
-            X = self._prepare_iq(X)
+        # Match the channel count the model was actually trained with.  Older
+        # models predate that metadata, so fall back to the architecture name.
+        meta = self.model_metadata or {}
+        expected_ch = int(meta.get(
+            'input_channels', 2 if meta.get('model_name', '') in IQ_MODELS else 1))
+
+        if expected_ch == 2:
+            if not np.iscomplexobj(raw):
+                msg = ("This model expects 2-channel I/Q, but the signal is real "
+                       "(passband). Set Output Type to Baseband (Complex IQ) and "
+                       "regenerate.")
+                if target == 'channel':
+                    self.ch_status_label.setText(msg)
+                else:
+                    self.status_label.setText(msg)
+                return
+            X = np.stack([raw.real, raw.imag], axis=0)[np.newaxis].astype(np.float32)
             X = self._normalize_iq(X)
         else:
-            X = raw[np.newaxis, np.newaxis, :]  # (1, 1, L)
+            # A real model on complex input: use I, which is what a real
+            # receiver front-end would deliver.
+            X = np.real(raw).astype(np.float32)[np.newaxis, np.newaxis, :]
 
         tensor = torch.from_numpy(X).to(self.get_device())
         self.model.eval()
@@ -889,13 +906,14 @@ class EvaluateModelTab(QWidget):
 
     @staticmethod
     def _prepare_iq(X_flat):
-        if np.iscomplexobj(X_flat):
-            return np.stack([X_flat.real, X_flat.imag], axis=1)
-        L = X_flat.shape[1]
-        if L % 2 != 0:
-            X_flat = X_flat[:, :L - 1]
-            L -= 1
-        return np.stack([X_flat[:, 0::2], X_flat[:, 1::2]], axis=1)
+        """Split complex baseband (N, L) into (N, 2, L) I/Q channels.
+
+        Complex only — the old even/odd fallback silently produced nonsense
+        for real passband signals, whose consecutive samples are not I and Q.
+        """
+        if not np.iscomplexobj(X_flat):
+            raise ValueError("_prepare_iq expects complex baseband input.")
+        return np.stack([X_flat.real, X_flat.imag], axis=1).astype(np.float32)
 
     @staticmethod
     def _normalize_iq(X_iq):

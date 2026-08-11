@@ -401,7 +401,7 @@ class InferenceResultsTab(QWidget):
                 continue
             try:
                 sig = self.dataset_manager.load_signal(entry)
-                arr = self._to_real_flat(sig)
+                arr = self._to_flat(sig)
                 X_list.append(arr)
                 y_list.append(label_map[mod])
             except Exception as exc:
@@ -460,7 +460,7 @@ class InferenceResultsTab(QWidget):
 
                 arr = self._load_array(fpath)
                 if arr is not None:
-                    X_list.append(self._to_real_flat(arr))
+                    X_list.append(self._to_flat(arr))
                     y_list.append(idx)
 
             if inferred and not self.class_labels:
@@ -481,16 +481,17 @@ class InferenceResultsTab(QWidget):
     # ── Data helpers ─────────────────────────────────────────────────────
 
     @staticmethod
-    def _to_real_flat(sig) -> np.ndarray:
-        """Convert any signal (complex or real, any shape) to flat float32."""
+    def _to_flat(sig) -> np.ndarray:
+        """Flatten a signal, preserving complex dtype.
+
+        This used to interleave complex input as [I0, Q0, I1, Q1, ...] to pair
+        with an even/odd split further down.  That round-tripped for complex
+        data but meant real passband signals were split the same way, which is
+        meaningless for them.  Complex is now carried through as complex and
+        split into channels once, in _prepare_iq.
+        """
         arr = np.asarray(sig).ravel()
-        if np.iscomplexobj(arr):
-            # Interleave I/Q so both channels are preserved
-            out = np.empty(2 * len(arr), dtype=np.float32)
-            out[0::2] = arr.real
-            out[1::2] = arr.imag
-            return out
-        return arr.astype(np.float32)
+        return arr if np.iscomplexobj(arr) else arr.astype(np.float32)
 
     @staticmethod
     def _infer_label(path: str) -> str:
@@ -519,13 +520,19 @@ class InferenceResultsTab(QWidget):
         return None
 
     def _prepare_iq(self, X: np.ndarray) -> np.ndarray:
-        """Reshape (N, L) flat → (N, 2, L/2) IQ channels."""
-        L = X.shape[1]
-        if L % 2 != 0:
-            X = X[:, :L - 1]
-        I = X[:, 0::2]
-        Q = X[:, 1::2]
-        return np.stack([I, Q], axis=1)
+        """Split complex baseband (N, L) into (N, 2, L) I/Q channels.
+
+        Requires complex input.  This used to split even/odd samples of a real
+        array, which only makes sense for interleaved [I0,Q0,I1,Q1,...] files —
+        not for the real passband signals this app produces by default, where
+        consecutive samples are two decimated copies of the same carrier.
+        """
+        if not np.iscomplexobj(X):
+            raise ValueError(
+                "This model expects 2-channel I/Q, but the test data is real "
+                "(passband). Evaluate it with a model trained on real data, or "
+                "load baseband (complex) test signals.")
+        return np.stack([X.real, X.imag], axis=1).astype(np.float32)
 
     @staticmethod
     def _normalize_iq(X_iq: np.ndarray) -> np.ndarray:
@@ -538,7 +545,10 @@ class InferenceResultsTab(QWidget):
         # Target length: use model's expected length, or max in batch
         target_len = self.model_signal_length or max(a.size for a in X_list)
 
-        X = np.zeros((len(X_list), target_len), dtype=np.float32)
+        # Keep the buffer complex when the data is, so Q survives to _prepare_iq.
+        any_complex = any(np.iscomplexobj(a) for a in X_list)
+        X = np.zeros((len(X_list), target_len),
+                     dtype=np.complex64 if any_complex else np.float32)
         for i, a in enumerate(X_list):
             L = min(len(a), target_len)
             X[i, :L] = a[:L]
@@ -547,7 +557,8 @@ class InferenceResultsTab(QWidget):
             X = self._prepare_iq(X)
             X = self._normalize_iq(X)
         else:
-            X = X[:, np.newaxis, :]        # (N, 1, L)
+            # np.real is a no-op on real data and takes I from complex input.
+            X = np.real(X).astype(np.float32)[:, np.newaxis, :]   # (N, 1, L)
 
         self.eval_data = torch.from_numpy(X)
         self.eval_labels = np.asarray(y_list, dtype=np.int64)

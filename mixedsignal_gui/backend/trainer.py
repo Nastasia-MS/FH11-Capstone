@@ -70,7 +70,10 @@ class TrainerThread(QThread):
                 if isinstance(arr, np.lib.npyio.NpzFile):
                     keys = list(arr.keys())
                     arr = arr[keys[0]] if keys else None
-                return np.asarray(arr, dtype=np.float32)
+                # Preserve complex baseband: forcing float32 here discarded Q
+                # at load time, so no downstream code could ever see it.
+                arr = np.asarray(arr)
+                return arr if np.iscomplexobj(arr) else arr.astype(np.float32)
             if path.lower().endswith('.csv'):
                 return np.loadtxt(path, delimiter=',').astype(np.float32)
         except Exception as e:
@@ -83,28 +86,23 @@ class TrainerThread(QThread):
         return self.model_name in IQ_MODELS
 
     def _prepare_iq_data(self, X_flat):
-        """Split a complex/interleaved signal into 2-channel (I, Q) format.
+        """Split a complex signal into 2-channel (I, Q) format.
 
-        Each row in X_flat is a 1D signal.  The signal may be:
-        - Already complex-valued  -> split real / imag
-        - Real-valued but interleaved I/Q -> split even / odd indices
-        Returns shape (N, 2, L) where L is half the original length.
+        Each row of *X_flat* is one complex baseband signal; the result is
+        (N, 2, L) with I and Q as separate channels and L unchanged.
+
+        Only complex input is accepted.  This previously fell back to treating
+        a real array as interleaved [I0, Q0, I1, Q1, ...], which is wrong for
+        the passband signals this app produces by default — those are real RF
+        waveforms I*cos(wt) - Q*sin(wt), whose consecutive samples are two
+        decimated copies of the same carrier rather than I and Q.  Real data is
+        now routed to the single-channel path instead.
         """
-        if np.iscomplexobj(X_flat):
-            I = X_flat.real
-            Q = X_flat.imag
-            return np.stack([I, Q], axis=1)
-
-        # Real-valued: treat as interleaved I/Q
-        # Make sure length is even
-        L = X_flat.shape[1]
-        if L % 2 != 0:
-            X_flat = X_flat[:, :L - 1]
-            L = L - 1
-        half = L // 2
-        I = X_flat[:, 0::2]  # even indices
-        Q = X_flat[:, 1::2]  # odd indices
-        return np.stack([I, Q], axis=1)
+        if not np.iscomplexobj(X_flat):
+            raise ValueError(
+                "_prepare_iq_data expects complex baseband; real signals should "
+                "use _prepare_1ch_data.")
+        return np.stack([X_flat.real, X_flat.imag], axis=1).astype(np.float32)
 
     def _prepare_1ch_data(self, X_flat):
         """Reshape flat data to (N, 1, L) for 1-channel Conv1d models."""
@@ -194,24 +192,37 @@ class TrainerThread(QThread):
             input_channels = num_ch
             print(f"Multi-channel mode: {num_ch} channels, {target_len} samples")
         else:
-            # Pad/truncate to target length
-            X = np.zeros((len(X_list), target_len), dtype=np.float32)
+            # Pad/truncate to target length.  The buffer must stay complex when
+            # the data is: casting to float32 here silently dropped Q, which
+            # made the complex branch below unreachable and sent every dataset
+            # through the interleaved-I/Q path.
+            any_complex = any(np.iscomplexobj(a) for a in X_list)
+            buf_dtype = np.complex64 if any_complex else np.float32
+            X = np.zeros((len(X_list), target_len), dtype=buf_dtype)
             for i, a in enumerate(X_list):
                 L = min(len(a), target_len)
-                X[i, :L] = a[:L].astype(np.float32)
+                X[i, :L] = a[:L]
 
         y = np.asarray(y_list, dtype=np.int64)
 
-        # Shape data based on model type (only for non-multi-channel)
+        # Shape according to what the data actually is, not what the model is
+        # named.  Complex baseband carries real quadrature and becomes two
+        # channels; a real passband recording is one channel — its consecutive
+        # samples are not I and Q, so splitting them would be meaningless.
         if is_multi_channel:
             pass  # already shaped as (batch, num_ch, target_len)
-        elif self._is_iq_model:
+        elif np.iscomplexobj(X):
             X = self._prepare_iq_data(X)
             X = self._normalize_iq(X)
             input_channels = 2
+            print("IQ mode: complex baseband -> 2 channels (I, Q)")
         else:
-            X = self._prepare_1ch_data(X)
+            X = self._prepare_1ch_data(X.astype(np.float32))
             input_channels = 1
+            if self._is_iq_model:
+                print(f"Note: {self.model_name} is an IQ architecture but the data "
+                      "is real (passband); training it with 1 input channel. "
+                      "Generate baseband (Complex IQ) datasets to use both.")
 
         # Shuffle
         idx = np.arange(len(X))
