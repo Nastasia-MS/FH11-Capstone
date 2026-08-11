@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 
 # Models that expect 2-channel IQ input (must stay in sync with trainer.py)
-_IQ_MODELS = {"ResNet1DOptimized"}
+_IQ_MODELS = set()   # passband-only build: nothing takes 2-channel I/Q
 
 
 # ── Theming helpers ──────────────────────────────────────────────────────
@@ -483,14 +483,11 @@ class InferenceResultsTab(QWidget):
     @staticmethod
     def _to_real_flat(sig) -> np.ndarray:
         """Convert any signal (complex or real, any shape) to flat float32."""
+        # Passband-only: keep the real part.  The previous version interleaved
+        # complex input as [I0, Q0, I1, Q1, ...] to feed an even/odd split that
+        # no longer exists on this branch.
         arr = np.asarray(sig).ravel()
-        if np.iscomplexobj(arr):
-            # Interleave I/Q so both channels are preserved
-            out = np.empty(2 * len(arr), dtype=np.float32)
-            out[0::2] = arr.real
-            out[1::2] = arr.imag
-            return out
-        return arr.astype(np.float32)
+        return np.real(arr).astype(np.float32)
 
     @staticmethod
     def _infer_label(path: str) -> str:
@@ -518,21 +515,6 @@ class InferenceResultsTab(QWidget):
             print(f"[InferenceTab] Cannot load {path}: {exc}")
         return None
 
-    def _prepare_iq(self, X: np.ndarray) -> np.ndarray:
-        """Reshape (N, L) flat → (N, 2, L/2) IQ channels."""
-        L = X.shape[1]
-        if L % 2 != 0:
-            X = X[:, :L - 1]
-        I = X[:, 0::2]
-        Q = X[:, 1::2]
-        return np.stack([I, Q], axis=1)
-
-    @staticmethod
-    def _normalize_iq(X_iq: np.ndarray) -> np.ndarray:
-        power = np.mean(X_iq[:, 0] ** 2 + X_iq[:, 1] ** 2, axis=1, keepdims=True)
-        scale = np.sqrt(np.maximum(power, 1e-10))[:, np.newaxis, :]
-        return X_iq / scale
-
     def _build_eval_tensors(self, X_list: list, y_list: list):
         """Pad/truncate, shape for the model, store as tensors."""
         # Target length: use model's expected length, or max in batch
@@ -543,11 +525,8 @@ class InferenceResultsTab(QWidget):
             L = min(len(a), target_len)
             X[i, :L] = a[:L]
 
-        if self.model_in_channels == 2:
-            X = self._prepare_iq(X)
-            X = self._normalize_iq(X)
-        else:
-            X = X[:, np.newaxis, :]        # (N, 1, L)
+        # Passband-only: always one real channel.
+        X = X[:, np.newaxis, :]        # (N, 1, L)
 
         self.eval_data = torch.from_numpy(X)
         self.eval_labels = np.asarray(y_list, dtype=np.int64)

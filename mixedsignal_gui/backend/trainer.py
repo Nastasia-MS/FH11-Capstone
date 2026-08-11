@@ -13,8 +13,23 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from .torch_models import get_model
 
-# Models that expect 2-channel IQ input
-IQ_MODELS = {'ResNet1DOptimized'}
+# PASSBAND-ONLY BUILD
+# -------------------
+# This branch trains exclusively on the real passband waveform: one input
+# channel, no I/Q.  Complex baseband inputs are reduced to their real part,
+# which is what a real receiver front-end would deliver.
+#
+# The IQ path was removed rather than repaired.  It was broken — the buffers
+# cast to float32 before any IQ code ran, so quadrature was already gone, and
+# real signals were then split into "I" and "Q" by taking even and odd
+# samples, which is meaningless for a passband recording.
+#
+# Known limitation of this representation, measured on this branch: a
+# 1-channel model separates FSK reliably but confuses QAM with PSK, because
+# their passband spectra are nearly identical and the distinguishing
+# information sits in the complex envelope that this build discards.  Expect
+# roughly a two-of-three ceiling on {QAM, PSK, FSK}.
+IQ_MODELS = set()          # retained so imports elsewhere keep working
 
 
 class TrainerThread(QThread):
@@ -70,7 +85,10 @@ class TrainerThread(QThread):
                 if isinstance(arr, np.lib.npyio.NpzFile):
                     keys = list(arr.keys())
                     arr = arr[keys[0]] if keys else None
-                return np.asarray(arr, dtype=np.float32)
+                # Passband-only: discard quadrature explicitly.  Relying on the
+                # float32 cast to do it works but raises ComplexWarning and
+                # hides a deliberate decision behind an accident.
+                return np.real(np.asarray(arr)).astype(np.float32)
             if path.lower().endswith('.csv'):
                 return np.loadtxt(path, delimiter=',').astype(np.float32)
         except Exception as e:
@@ -79,43 +97,12 @@ class TrainerThread(QThread):
 
     @property
     def _is_iq_model(self):
-        """Return True if the selected model expects 2-channel IQ input."""
-        return self.model_name in IQ_MODELS
-
-    def _prepare_iq_data(self, X_flat):
-        """Split a complex/interleaved signal into 2-channel (I, Q) format.
-
-        Each row in X_flat is a 1D signal.  The signal may be:
-        - Already complex-valued  -> split real / imag
-        - Real-valued but interleaved I/Q -> split even / odd indices
-        Returns shape (N, 2, L) where L is half the original length.
-        """
-        if np.iscomplexobj(X_flat):
-            I = X_flat.real
-            Q = X_flat.imag
-            return np.stack([I, Q], axis=1)
-
-        # Real-valued: treat as interleaved I/Q
-        # Make sure length is even
-        L = X_flat.shape[1]
-        if L % 2 != 0:
-            X_flat = X_flat[:, :L - 1]
-            L = L - 1
-        half = L // 2
-        I = X_flat[:, 0::2]  # even indices
-        Q = X_flat[:, 1::2]  # odd indices
-        return np.stack([I, Q], axis=1)
+        """Always False on this branch — every model is trained 1-channel."""
+        return False
 
     def _prepare_1ch_data(self, X_flat):
         """Reshape flat data to (N, 1, L) for 1-channel Conv1d models."""
         return X_flat[:, np.newaxis, :]
-
-    def _normalize_iq(self, X_iq):
-        """Per-sample power normalization for IQ data (N, 2, L)."""
-        power = np.mean(X_iq[:, 0, :] ** 2 + X_iq[:, 1, :] ** 2, axis=1, keepdims=True)
-        power = np.maximum(power, 1e-10)
-        scale = np.sqrt(power)[:, np.newaxis, :]  # (N, 1, 1)
-        return X_iq / scale
 
     def run(self):
         if not self.file_label_pairs:
@@ -194,21 +181,19 @@ class TrainerThread(QThread):
             input_channels = num_ch
             print(f"Multi-channel mode: {num_ch} channels, {target_len} samples")
         else:
-            # Pad/truncate to target length
+            # Pad/truncate to target length.  np.real() is explicit rather than
+            # relying on a lossy cast: a complex baseband file contributes its
+            # in-phase component, the same thing a real front-end would see.
             X = np.zeros((len(X_list), target_len), dtype=np.float32)
             for i, a in enumerate(X_list):
                 L = min(len(a), target_len)
-                X[i, :L] = a[:L].astype(np.float32)
+                X[i, :L] = np.real(a[:L]).astype(np.float32)
 
         y = np.asarray(y_list, dtype=np.int64)
 
-        # Shape data based on model type (only for non-multi-channel)
+        # Passband-only: always a single real channel.
         if is_multi_channel:
             pass  # already shaped as (batch, num_ch, target_len)
-        elif self._is_iq_model:
-            X = self._prepare_iq_data(X)
-            X = self._normalize_iq(X)
-            input_channels = 2
         else:
             X = self._prepare_1ch_data(X)
             input_channels = 1

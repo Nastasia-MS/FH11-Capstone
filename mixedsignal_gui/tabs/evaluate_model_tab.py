@@ -20,8 +20,9 @@ from mixedsignal_gui.widgets.modulation_utils import (mark_unavailable_modulatio
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift)
 
-# Must stay in sync with trainer.py
-IQ_MODELS = {'ResNet1DOptimized'}
+# Passband-only build: no model takes 2-channel I/Q here.  Kept as an empty
+# set so any stale import continues to resolve.
+IQ_MODELS = set()
 
 
 def _apply_theme_style(fig, widget):
@@ -722,19 +723,17 @@ class EvaluateModelTab(QWidget):
         from mixedsignal_gui.backend.trainer import TrainerThread
         target_len = TrainerThread.TARGET_LENGTH
 
-        raw = np.asarray(data, dtype=np.float32).ravel()
+        # Passband-only build: take the real part explicitly.  A no-op for the
+        # passband signals this app generates by default; for complex baseband
+        # it keeps I, which is what a real front-end would deliver.
+        raw = np.real(np.asarray(data)).astype(np.float32).ravel()
         if len(raw) > target_len:
             raw = raw[:target_len]
         elif len(raw) < target_len:
             raw = np.pad(raw, (0, target_len - len(raw)))
 
-        is_iq = (self.model_metadata or {}).get('model_name', '') in IQ_MODELS
-        if is_iq:
-            X = raw[np.newaxis, :]  # (1, L)
-            X = self._prepare_iq(X)
-            X = self._normalize_iq(X)
-        else:
-            X = raw[np.newaxis, np.newaxis, :]  # (1, 1, L)
+        # Passband-only: always one real channel.
+        X = raw[np.newaxis, np.newaxis, :]  # (1, 1, L)
 
         tensor = torch.from_numpy(X).to(self.get_device())
         self.model.eval()
@@ -883,23 +882,5 @@ class EvaluateModelTab(QWidget):
             f"Applied impairments to {self._last_modulation} waveform — classifying…")
         self._classify_signal(augmented, target='channel')
 
-    # ------------------------------------------------------------------
-    # IQ helpers (same as trainer / inference)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _prepare_iq(X_flat):
-        if np.iscomplexobj(X_flat):
-            return np.stack([X_flat.real, X_flat.imag], axis=1)
-        L = X_flat.shape[1]
-        if L % 2 != 0:
-            X_flat = X_flat[:, :L - 1]
-            L -= 1
-        return np.stack([X_flat[:, 0::2], X_flat[:, 1::2]], axis=1)
-
-    @staticmethod
-    def _normalize_iq(X_iq):
-        power = np.mean(X_iq[:, 0, :] ** 2 + X_iq[:, 1, :] ** 2, axis=1, keepdims=True)
-        power = np.maximum(power, 1e-10)
-        scale = np.sqrt(power)[:, np.newaxis, :]
-        return X_iq / scale
+    # IQ helpers removed on this passband-only branch: every signal is reduced
+    # to its real part and classified as a single channel.
