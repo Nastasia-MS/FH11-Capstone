@@ -298,6 +298,23 @@ def build_stylesheet(theme_name: str = "Light (Default)", font_size: int = 10,
             border-left: 1px solid {t['border']};
             background: {t['bg_card']};
         }}
+        /* Disabled controls previously rendered identically to enabled ones,
+           so a greyed-out field looked editable and the toggle that governed
+           it seemed to do nothing. Mute the text and background instead. */
+        QDoubleSpinBox:disabled, QSpinBox:disabled, QLineEdit:disabled,
+        QComboBox:disabled, QPushButton:disabled, QCheckBox:disabled,
+        QLabel:disabled, QSlider:disabled, QListWidget:disabled {{
+            color: {t['text_muted']};
+        }}
+        QDoubleSpinBox:disabled, QSpinBox:disabled, QLineEdit:disabled,
+        QComboBox:disabled {{
+            background-color: {t['bg_main']};
+            border-color: {t['border']};
+        }}
+        QAbstractSpinBox::up-button:disabled,
+        QAbstractSpinBox::down-button:disabled {{
+            background: {t['bg_main']};
+        }}
         QAbstractSpinBox::up-button {{
             subcontrol-position: top right;
             border-top-right-radius: {r}px;

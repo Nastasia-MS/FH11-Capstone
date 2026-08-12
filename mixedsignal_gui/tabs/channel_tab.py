@@ -608,19 +608,24 @@ class ChannelNoiseTab(QWidget):
 
         self.meas_awgn_cb = QCheckBox("Add AWGN after the channel")
         self.meas_awgn_cb.setChecked(False)
-        self.meas_awgn_cb.toggled.connect(
-            lambda on: self.meas_snr_spin.setEnabled(on))
         layout.addWidget(self.meas_awgn_cb)
 
-        snr_row = QHBoxLayout()
+        # The SNR row lives in its own container so the checkbox disables the
+        # label along with the spin box, matching how the AWGN page gates its
+        # sections. Disabling the spin box alone left "SNR (dB)" at full
+        # contrast, which read as an editable setting.
+        self.meas_snr_controls = QWidget()
+        snr_row = QHBoxLayout(self.meas_snr_controls)
+        snr_row.setContentsMargins(0, 0, 0, 0)
         snr_row.addWidget(QLabel("SNR (dB)"))
         self.meas_snr_spin = QDoubleSpinBox()
         self.meas_snr_spin.setRange(-10.0, 40.0)
         self.meas_snr_spin.setValue(20.0)
         self.meas_snr_spin.setDecimals(1)
-        self.meas_snr_spin.setEnabled(False)
         snr_row.addWidget(self.meas_snr_spin, 1)
-        layout.addLayout(snr_row)
+        self.meas_snr_controls.setEnabled(False)
+        self.meas_awgn_cb.toggled.connect(self.meas_snr_controls.setEnabled)
+        layout.addWidget(self.meas_snr_controls)
 
         self.meas_random_cb = QCheckBox("Pick a random channel from the bank")
         self.meas_random_cb.setToolTip(
