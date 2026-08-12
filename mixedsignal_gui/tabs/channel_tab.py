@@ -2,7 +2,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileD
                                QPushButton, QFrame, QTableWidget, QTableWidgetItem,
                                QHeaderView, QSlider, QGridLayout, QComboBox,
                                QDoubleSpinBox, QSpinBox, QStackedWidget, QMessageBox,
-                               QButtonGroup, QCheckBox, QScrollArea)
+                               QButtonGroup, QCheckBox, QScrollArea,
+                               QListWidget)
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QPalette, QColor
 
@@ -12,7 +13,9 @@ from mixedsignal_gui.widgets.waveform_plots import PlottingWidget
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift,
-                                  StochasticTDLAugmentation, SionnaRTAugmentation)
+                                  StochasticTDLAugmentation, SionnaRTAugmentation,
+                                  MeasuredChannelAugmentation)
+from mixedsignal_gui.backend.channel_bank import ChannelBank, BIN_DTYPES
 from mixedsignal_gui.sionna_widget.scenes import available_scenes
 import numpy as np
 import json
@@ -46,6 +49,9 @@ class ChannelNoiseTab(QWidget):
         # RT state
         self.rt_last_taps = None
         self.sionna_widget = None  # lazy-created
+
+        # Measured-channel state: CIRs imported from real recordings
+        self.channel_bank = ChannelBank()
 
         self._active_entry = None   # currently selected metadata dict
 
@@ -131,13 +137,19 @@ class ChannelNoiseTab(QWidget):
         self.rt_pill.setObjectName("subtabPill")
         self.rt_pill.setCheckable(True)
 
+        self.measured_pill = QPushButton("Measured Channel")
+        self.measured_pill.setObjectName("subtabPill")
+        self.measured_pill.setCheckable(True)
+
         self.subtab_group.addButton(self.awgn_pill, 0)
         self.subtab_group.addButton(self.stoch_pill, 1)
         self.subtab_group.addButton(self.rt_pill, 2)
+        self.subtab_group.addButton(self.measured_pill, 3)
 
         pill_layout.addWidget(self.awgn_pill)
         pill_layout.addWidget(self.stoch_pill)
         pill_layout.addWidget(self.rt_pill)
+        pill_layout.addWidget(self.measured_pill)
         pill_layout.addStretch()
         layout.addLayout(pill_layout)
 
@@ -146,6 +158,7 @@ class ChannelNoiseTab(QWidget):
         self.subtab_stack.addWidget(self._create_awgn_page())
         self.subtab_stack.addWidget(self._create_stochastic_page())
         self.subtab_stack.addWidget(self._create_rt_page())
+        self.subtab_stack.addWidget(self._create_measured_page())
         layout.addWidget(self.subtab_stack, 1)  # stretch factor 1 → fills all space above buttons
 
         self.subtab_group.idClicked.connect(self._on_subtab_changed)
@@ -510,6 +523,214 @@ class ChannelNoiseTab(QWidget):
         layout.addWidget(self.stoch_output_shape_label)
 
         return page
+
+    # ---- Measured Channel page ----
+    def _create_measured_page(self):
+        """Import real recorded channel impulse responses and apply them."""
+        page, layout = self._make_scroll_page()
+
+        title = QLabel("Measured Channel")
+        title.setProperty("class", "section-title")
+        desc = QLabel("Augment using channel impulse responses recorded from "
+                      "real hardware")
+        desc.setProperty("class", "section-subtitle")
+        desc.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(desc)
+
+        # --- Import ---
+        import_title = QLabel("Channel Bank")
+        import_title.setProperty("class", "section-title")
+        layout.addWidget(import_title)
+
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel(".bin format"))
+        self.meas_bin_dtype_combo = QComboBox()
+        self.meas_bin_dtype_combo.addItems(list(BIN_DTYPES.keys()))
+        self.meas_bin_dtype_combo.setToolTip(
+            "Raw .bin files carry no header, so the sample layout must be "
+            "given. Only used when importing .bin; other formats describe "
+            "themselves.")
+        fmt_row.addWidget(self.meas_bin_dtype_combo, 1)
+        layout.addLayout(fmt_row)
+
+        btn_row = QHBoxLayout()
+        self.meas_import_files_btn = QPushButton("Import Files…")
+        self.meas_import_files_btn.clicked.connect(self._measured_import_files)
+        btn_row.addWidget(self.meas_import_files_btn)
+
+        self.meas_import_folder_btn = QPushButton("Import Folder…")
+        self.meas_import_folder_btn.clicked.connect(self._measured_import_folder)
+        btn_row.addWidget(self.meas_import_folder_btn)
+        layout.addLayout(btn_row)
+
+        self.meas_clear_btn = QPushButton("Clear Bank")
+        self.meas_clear_btn.clicked.connect(self._measured_clear_bank)
+        layout.addWidget(self.meas_clear_btn)
+
+        layout.addWidget(QLabel("Loaded channels"))
+        self.meas_channel_list = QListWidget()
+        self.meas_channel_list.setMinimumHeight(140)
+        self.meas_channel_list.currentRowChanged.connect(
+            self._measured_on_selection_changed)
+        layout.addWidget(self.meas_channel_list)
+
+        self.meas_detail_label = QLabel("No channels loaded")
+        self.meas_detail_label.setProperty("class", "section-subtitle")
+        self.meas_detail_label.setWordWrap(True)
+        layout.addWidget(self.meas_detail_label)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep)
+
+        # --- Application options ---
+        opt_title = QLabel("Options")
+        opt_title.setProperty("class", "section-title")
+        layout.addWidget(opt_title)
+
+        self.meas_normalize_cb = QCheckBox("Normalize channel to unit energy")
+        self.meas_normalize_cb.setChecked(True)
+        self.meas_normalize_cb.setToolTip(
+            "Keeps the signal's overall power unchanged so the channel alters "
+            "its shape rather than its level. Turn off to keep the recorded "
+            "path loss.")
+        layout.addWidget(self.meas_normalize_cb)
+
+        self.meas_awgn_cb = QCheckBox("Add AWGN after the channel")
+        self.meas_awgn_cb.setChecked(False)
+        self.meas_awgn_cb.toggled.connect(
+            lambda on: self.meas_snr_spin.setEnabled(on))
+        layout.addWidget(self.meas_awgn_cb)
+
+        snr_row = QHBoxLayout()
+        snr_row.addWidget(QLabel("SNR (dB)"))
+        self.meas_snr_spin = QDoubleSpinBox()
+        self.meas_snr_spin.setRange(-10.0, 40.0)
+        self.meas_snr_spin.setValue(20.0)
+        self.meas_snr_spin.setDecimals(1)
+        self.meas_snr_spin.setEnabled(False)
+        snr_row.addWidget(self.meas_snr_spin, 1)
+        layout.addLayout(snr_row)
+
+        self.meas_random_cb = QCheckBox("Pick a random channel from the bank")
+        self.meas_random_cb.setToolTip(
+            "Use a randomly chosen channel on each Apply, instead of the "
+            "selected one — handy for building a varied training set.")
+        layout.addWidget(self.meas_random_cb)
+
+        return page
+
+    # ---- Measured Channel handlers ----
+
+    def _measured_bin_dtype(self):
+        return BIN_DTYPES[self.meas_bin_dtype_combo.currentText()]
+
+    def _measured_import_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Import Channel Files", "",
+            "Channel data (*.npy *.mat *.sigmf-meta *.sigmf *.bin);;All Files (*)")
+        if not paths:
+            return
+        added, errors = 0, {}
+        for p in paths:
+            try:
+                added += self.channel_bank.add_file(
+                    p, bin_dtype=self._measured_bin_dtype())
+            except Exception as exc:                       # noqa: BLE001
+                errors[os.path.basename(p)] = str(exc)
+        self._measured_report_import(added, errors)
+
+    def _measured_import_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Import Channel Folder")
+        if not folder:
+            return
+        try:
+            added, errors = self.channel_bank.add_folder(
+                folder, bin_dtype=self._measured_bin_dtype())
+        except Exception as exc:                           # noqa: BLE001
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        self._measured_report_import(added, errors)
+
+    def _measured_report_import(self, added, errors):
+        """Refresh the list and tell the user what did and did not load."""
+        self._measured_refresh_list()
+        if added and not errors:
+            QMessageBox.information(
+                self, "Channels imported",
+                f"Added {added} channel(s). The bank now holds "
+                f"{len(self.channel_bank)}.")
+        elif added and errors:
+            detail = "\n".join(f"\n• {k}\n    {v}" for k, v in errors.items())
+            QMessageBox.warning(
+                self, "Imported with problems",
+                f"Added {added} channel(s); {len(errors)} file(s) could not be "
+                f"read:\n{detail}")
+        elif errors:
+            detail = "\n".join(f"\n• {k}\n    {v}" for k, v in errors.items())
+            QMessageBox.critical(self, "Nothing imported",
+                                 f"No channels could be read:\n{detail}")
+        else:
+            QMessageBox.information(self, "Nothing imported",
+                                    "No supported channel files were found.")
+
+    def _measured_clear_bank(self):
+        self.channel_bank.clear()
+        self._measured_refresh_list()
+
+    def _measured_refresh_list(self):
+        self.meas_channel_list.clear()
+        for ch in self.channel_bank:
+            self.meas_channel_list.addItem(ch.name)
+        if len(self.channel_bank):
+            self.meas_channel_list.setCurrentRow(0)
+        else:
+            self.meas_detail_label.setText("No channels loaded")
+
+    def _measured_on_selection_changed(self, row):
+        ch = self._measured_selected_channel(row)
+        if ch is None:
+            self.meas_detail_label.setText("No channels loaded")
+            return
+        src = os.path.basename(ch.source_path) if ch.source_path else "—"
+        self.meas_detail_label.setText(f"{ch.describe()}\nfrom {src}")
+
+    def _measured_selected_channel(self, row=None):
+        if not len(self.channel_bank):
+            return None
+        if row is None:
+            row = self.meas_channel_list.currentRow()
+        channels = self.channel_bank.channels
+        if row is None or row < 0 or row >= len(channels):
+            return None
+        return channels[row]
+
+    def _build_measured_block(self):
+        """Construct the augmentation block, or None with a reason shown."""
+        if not len(self.channel_bank):
+            QMessageBox.warning(
+                self, "No channels", "Import channel files before applying a "
+                "measured channel.")
+            return None
+
+        if self.meas_random_cb.isChecked():
+            channels = self.channel_bank.channels
+            channel = channels[np.random.randint(len(channels))]
+        else:
+            channel = self._measured_selected_channel()
+            if channel is None:
+                QMessageBox.warning(self, "No channel selected",
+                                    "Select a channel from the bank.")
+                return None
+
+        return MeasuredChannelAugmentation(
+            channel,
+            normalize=self.meas_normalize_cb.isChecked(),
+            snr_db=(self.meas_snr_spin.value()
+                    if self.meas_awgn_cb.isChecked() else None),
+        )
 
     # ---- Ray Tracing page (full controls) ----
     def _create_rt_page(self):
@@ -1539,6 +1760,22 @@ class ChannelNoiseTab(QWidget):
                     f"RT augmentation failed:\n\n{e}"
                 )
                 return
+        elif self.active_subtab == 3:
+            # Measured channel path — a CIR recorded from real hardware.
+            # Works on real passband as well as complex baseband, so unlike
+            # the TDL and RT paths it is not gated on baseband input.
+            block = self._build_measured_block()
+            if block is None:
+                return                      # reason already shown to the user
+            try:
+                augmented_signal = block.apply(signal, fs)
+                self._last_measured_block = block
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Augmentation Error",
+                    f"Measured channel augmentation failed:\n\n{e}"
+                )
+                return
         else:
             # AWGN path
             pipeline = AugmentationPipeline()
@@ -1627,6 +1864,13 @@ class ChannelNoiseTab(QWidget):
             aug_config["transmitters"][0]["waveform_path"] = f"{aug_name}.npy"
             metadata['augmentation_type'] = 'sionna_rt'
             metadata['augmentation_config'] = aug_config
+        elif self.active_subtab == 3:
+            # Record which recorded CIR produced this, so the augmentation can
+            # be traced back to its source file later.
+            block = getattr(self, '_last_measured_block', None)
+            metadata['augmentation_type'] = 'measured_channel'
+            metadata['augmentation_config'] = (
+                block.to_config() if block is not None else {})
         else:
             metadata['augmentation_type'] = 'awgn'
             metadata['augmentation_config'] = {

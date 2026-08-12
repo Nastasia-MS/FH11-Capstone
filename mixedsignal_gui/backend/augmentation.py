@@ -477,3 +477,69 @@ class StochasticTDLAugmentation(AugmentationBlock):
         profile = self.config.get("channel", {}).get("profile", "?")
         snr = self.config.get("noise", {}).get("snr_db", "?")
         return f"StochasticTDLAugmentation(profile={profile}, snr_db={snr})"
+
+class MeasuredChannelAugmentation(AugmentationBlock):
+    """Convolve a signal with a measured channel impulse response.
+
+    The third channel source in the app, beside the stochastic TDL model and
+    the Sionna ray tracer: a CIR recorded from real hardware, loaded by
+    ``backend.channel_bank``.
+
+    Real passband input stays real.  A measured CIR is generally complex —
+    it describes the complex baseband channel — so applying it directly to a
+    passband waveform would invent a quadrature component the signal does not
+    have.  The analytic signal is used instead, matching how
+    ``ScalarAmplitudeAndPhaseShift`` handles the same situation, and the real
+    part is taken at the end.  Complex baseband input is convolved directly.
+    """
+
+    def __init__(self, channel, normalize: bool = True,
+                 snr_db: Optional[float] = None, seed: Optional[int] = None):
+        """
+        Args:
+            channel: a ``channel_bank.MeasuredChannel``
+            normalize: scale taps to unit energy so the channel changes the
+                shape of the signal without changing its overall power
+            snr_db: optional AWGN applied after the channel; None means none
+            seed: RNG seed for that noise
+        """
+        self.channel = channel
+        self.normalize = normalize
+        self.snr_db = snr_db
+        self.seed = seed
+
+    def apply(self, signal: np.ndarray, fs: float, **_kwargs) -> np.ndarray:
+        taps = self.channel.normalized() if self.normalize else self.channel.taps
+        if taps.size == 0:
+            return signal.copy()
+
+        x = np.asarray(signal)
+        if np.iscomplexobj(x):
+            y = np.convolve(x, taps)[: len(x)]
+        else:
+            # Real passband: filter the analytic signal, then come back to real
+            # so the output stays the same kind of signal as the input.
+            analytic = hilbert(x.astype(np.float64))
+            y = np.real(np.convolve(analytic, taps)[: len(x)])
+            y = y.astype(np.float32)
+
+        if self.snr_db is not None:
+            y = AWGNAugmentation(snr_db=self.snr_db, seed=self.seed).apply(y, fs)
+        return y
+
+    def to_config(self) -> dict:
+        """Serialisable description, stored in the augmented dataset metadata."""
+        return {
+            "channel_name": self.channel.name,
+            "source_path": self.channel.source_path,
+            "num_taps": int(self.channel.num_taps),
+            "rms_delay_spread_samples": float(self.channel.delay_spread_samples),
+            "channel_fs": self.channel.fs,
+            "normalize": bool(self.normalize),
+            "snr_db": self.snr_db,
+            "seed": self.seed,
+        }
+
+    def __repr__(self) -> str:
+        return (f"MeasuredChannelAugmentation(channel={self.channel.name!r}, "
+                f"taps={self.channel.num_taps}, snr_db={self.snr_db})")
