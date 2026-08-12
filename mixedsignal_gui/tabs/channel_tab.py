@@ -15,7 +15,7 @@ from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugm
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift,
                                   StochasticTDLAugmentation, SionnaRTAugmentation,
                                   MeasuredChannelAugmentation)
-from mixedsignal_gui.backend.channel_bank import ChannelBank, BIN_DTYPES
+from mixedsignal_gui.backend.channel_bank import ChannelBank, BIN_DTYPES, DOMAINS
 from mixedsignal_gui.sionna_widget.scenes import available_scenes
 import numpy as np
 import json
@@ -543,6 +543,19 @@ class ChannelNoiseTab(QWidget):
         import_title.setProperty("class", "section-title")
         layout.addWidget(import_title)
 
+        dom_row = QHBoxLayout()
+        dom_row.addWidget(QLabel("Interpret as"))
+        self.meas_domain_combo = QComboBox()
+        self.meas_domain_combo.addItems([
+            "Auto-detect", "Impulse response h[n]", "Frequency response H(f)"])
+        self.meas_domain_combo.setToolTip(
+            "OFDM channel estimators output a value per subcarrier — a frequency "
+            "response — which is converted to an impulse response on import. "
+            "Auto-detect compares how concentrated the data is before and after "
+            "an inverse FFT; override here if it guesses wrong.")
+        dom_row.addWidget(self.meas_domain_combo, 1)
+        layout.addLayout(dom_row)
+
         fmt_row = QHBoxLayout()
         fmt_row.addWidget(QLabel(".bin format"))
         self.meas_bin_dtype_combo = QComboBox()
@@ -627,6 +640,9 @@ class ChannelNoiseTab(QWidget):
     def _measured_bin_dtype(self):
         return BIN_DTYPES[self.meas_bin_dtype_combo.currentText()]
 
+    def _measured_domain(self):
+        return DOMAINS[self.meas_domain_combo.currentIndex()]
+
     def _measured_import_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Import Channel Files", "",
@@ -637,7 +653,8 @@ class ChannelNoiseTab(QWidget):
         for p in paths:
             try:
                 added += self.channel_bank.add_file(
-                    p, bin_dtype=self._measured_bin_dtype())
+                    p, bin_dtype=self._measured_bin_dtype(),
+                    domain=self._measured_domain())
             except Exception as exc:                       # noqa: BLE001
                 errors[os.path.basename(p)] = str(exc)
         self._measured_report_import(added, errors)
@@ -648,7 +665,8 @@ class ChannelNoiseTab(QWidget):
             return
         try:
             added, errors = self.channel_bank.add_folder(
-                folder, bin_dtype=self._measured_bin_dtype())
+                folder, bin_dtype=self._measured_bin_dtype(),
+                domain=self._measured_domain())
         except Exception as exc:                           # noqa: BLE001
             QMessageBox.critical(self, "Import failed", str(exc))
             return
@@ -695,7 +713,9 @@ class ChannelNoiseTab(QWidget):
             self.meas_detail_label.setText("No channels loaded")
             return
         src = os.path.basename(ch.source_path) if ch.source_path else "—"
-        self.meas_detail_label.setText(f"{ch.describe()}\nfrom {src}")
+        dom = ch.metadata.get("domain", "time")
+        dom_txt = " (converted from H(f))" if dom == "frequency" else ""
+        self.meas_detail_label.setText(f"{ch.describe()}{dom_txt}\nfrom {src}")
 
     def _measured_selected_channel(self, row=None):
         if not len(self.channel_bank):
