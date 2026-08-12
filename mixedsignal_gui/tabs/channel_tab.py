@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileD
                                QHeaderView, QSlider, QGridLayout, QComboBox,
                                QDoubleSpinBox, QSpinBox, QStackedWidget, QMessageBox,
                                QButtonGroup, QCheckBox, QScrollArea,
-                               QListWidget)
+                               QListWidget, QInputDialog)
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QPalette, QColor
 
@@ -20,6 +20,7 @@ from mixedsignal_gui.sionna_widget.scenes import available_scenes
 import numpy as np
 import json
 import os
+from pathlib import Path
 
 
 class ChannelNoiseTab(QWidget):
@@ -556,16 +557,10 @@ class ChannelNoiseTab(QWidget):
         dom_row.addWidget(self.meas_domain_combo, 1)
         layout.addLayout(dom_row)
 
-        fmt_row = QHBoxLayout()
-        fmt_row.addWidget(QLabel(".bin format"))
-        self.meas_bin_dtype_combo = QComboBox()
-        self.meas_bin_dtype_combo.addItems(list(BIN_DTYPES.keys()))
-        self.meas_bin_dtype_combo.setToolTip(
-            "Raw .bin files carry no header, so the sample layout must be "
-            "given. Only used when importing .bin; other formats describe "
-            "themselves.")
-        fmt_row.addWidget(self.meas_bin_dtype_combo, 1)
-        layout.addLayout(fmt_row)
+        # No .bin format control here on purpose: .npy/.mat/.sigmf describe
+        # their own sample type, so only raw .bin needs one.  It is asked for
+        # on demand in _measured_bin_dtype(), when a .bin is actually being
+        # imported, rather than sitting on screen for everyone else.
 
         btn_row = QHBoxLayout()
         self.meas_import_files_btn = QPushButton("Import Files…")
@@ -637,8 +632,25 @@ class ChannelNoiseTab(QWidget):
 
     # ---- Measured Channel handlers ----
 
-    def _measured_bin_dtype(self):
-        return BIN_DTYPES[self.meas_bin_dtype_combo.currentText()]
+    def _measured_bin_dtype(self, paths):
+        """Sample layout for raw .bin, asked for only when one is present.
+
+        .npy/.mat/.sigmf carry their own type, so most imports never need this.
+        A raw .bin has no header, and a wrong guess yields plausible-looking
+        garbage rather than an error, so it has to be asked rather than assumed.
+        Returns None if the user cancels.
+        """
+        if not any(str(p).lower().endswith(".bin") for p in paths):
+            return BIN_DTYPES[next(iter(BIN_DTYPES))]      # unused; keeps the call simple
+
+        options = list(BIN_DTYPES.keys())
+        choice, accepted = QInputDialog.getItem(
+            self, "Raw .bin sample format",
+            "These files have no header, so the sample layout must be given:",
+            options, 0, False)
+        if not accepted:
+            return None
+        return BIN_DTYPES[choice]
 
     def _measured_domain(self):
         return DOMAINS[self.meas_domain_combo.currentIndex()]
@@ -649,11 +661,14 @@ class ChannelNoiseTab(QWidget):
             "Channel data (*.npy *.mat *.sigmf-meta *.sigmf *.bin);;All Files (*)")
         if not paths:
             return
+        bin_dtype = self._measured_bin_dtype(paths)
+        if bin_dtype is None:
+            return                                          # user cancelled
         added, errors = 0, {}
         for p in paths:
             try:
                 added += self.channel_bank.add_file(
-                    p, bin_dtype=self._measured_bin_dtype(),
+                    p, bin_dtype=bin_dtype,
                     domain=self._measured_domain())
             except Exception as exc:                       # noqa: BLE001
                 errors[os.path.basename(p)] = str(exc)
@@ -663,9 +678,17 @@ class ChannelNoiseTab(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Import Channel Folder")
         if not folder:
             return
+        # Only prompt if the folder actually holds .bin files
+        try:
+            contents = [str(p) for p in Path(folder).iterdir()]
+        except OSError:
+            contents = []
+        bin_dtype = self._measured_bin_dtype(contents)
+        if bin_dtype is None:
+            return                                          # user cancelled
         try:
             added, errors = self.channel_bank.add_folder(
-                folder, bin_dtype=self._measured_bin_dtype(),
+                folder, bin_dtype=bin_dtype,
                 domain=self._measured_domain())
         except Exception as exc:                           # noqa: BLE001
             QMessageBox.critical(self, "Import failed", str(exc))
