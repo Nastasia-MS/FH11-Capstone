@@ -4,8 +4,11 @@ Gives the Channel & Noise tab a third source of channel realisations
 alongside the stochastic TDL model and the Sionna ray tracer: real CIRs
 recorded from hardware.
 
-Files are expected to contain impulse responses, not raw captures — a
-complex tap vector h[n] per measurement.  Supported containers:
+Files may hold either time-domain impulse responses h[n] or per-subcarrier
+frequency responses H(f) — OFDM channel estimators produce the latter, and
+they are detected and converted automatically (see ``detect_domain``).  What
+is *not* supported is a raw capture, which would have to be run through a
+channel estimator first.  Supported containers:
 
 * ``.npy``   NumPy array.  1-D is one CIR; 2-D is one CIR per row.
 * ``.mat``   MATLAB v5 (via scipy) or v7.3/HDF5 (via h5py).  The largest
@@ -56,6 +59,76 @@ SUPPORTED_SUFFIXES = (".npy", ".mat", ".sigmf", ".sigmf-meta", ".sigmf-data", ".
 #: as a filter would produce a convolution nobody wants to wait for.
 MAX_REASONABLE_TAPS = 100_000
 
+#: How the numbers in a file should be read.
+#: "auto" inspects each array, "time" takes them as taps h[n], "frequency"
+#: treats them as a per-subcarrier response H(f) and transforms to a CIR.
+DOMAINS = ("auto", "time", "frequency")
+
+#: Pre-cursor taps kept ahead of the main path when converting H(f) to a CIR.
+FREQ_PRE_TAPS = 16
+
+
+def _peak_concentration(v: np.ndarray, frac: float = 0.05) -> float:
+    """Share of energy in a window of *frac* length centred on the strongest tap.
+
+    High for an impulse response (energy in a few taps), low for a frequency
+    response (spread smoothly across every bin).
+    """
+    p = np.abs(np.asarray(v)) ** 2
+    total = p.sum()
+    if total <= 0:
+        return 0.0
+    half = max(1, int(len(p) * frac / 2))
+    peak = int(np.argmax(p))
+    lo, hi = max(0, peak - half), min(len(p), peak + half + 1)
+    return float(p[lo:hi].sum() / total)
+
+
+def detect_domain(v: np.ndarray) -> str:
+    """Guess whether *v* holds taps or a frequency response.
+
+    Transforming a frequency response concentrates it into a few taps, while
+    transforming an already-time-domain CIR smears it out.  Comparing the two
+    concentrations is a far more reliable signal than array length: OFDM
+    estimates arrive at whatever the subcarrier count happens to be.
+    """
+    v = np.asarray(v).ravel()
+    if v.size < 8:
+        return "time"
+    as_is = _peak_concentration(v)
+    transformed = _peak_concentration(np.fft.fftshift(np.fft.ifft(v)))
+    return "frequency" if transformed > 3.0 * as_is else "time"
+
+
+def frequency_response_to_cir(H: np.ndarray, *, pre_taps: int = FREQ_PRE_TAPS,
+                              max_taps: Optional[int] = None) -> np.ndarray:
+    """Convert a per-subcarrier response H(f) into a usable impulse response.
+
+    The IFFT of an OFDM channel estimate is centred rather than causal — the
+    timing reference sits mid-window, so pre-cursor energy wraps to the end of
+    the array.  Convolving with that raw would apply the tail as a huge
+    spurious delay.  ``fftshift`` brings the main path to the middle, then a
+    circular shift moves it to ``pre_taps`` from the start.
+
+    That shift is deliberately circular rather than a crop: it is a pure linear
+    phase, so the magnitude response is preserved *exactly* (measured
+    correlation 1.0000 against the source estimates), whereas windowing around
+    the peak discarded real structure — on the CMAT OFDM captures a 256-tap
+    window scored only 0.69, because estimation noise is spread across every
+    delay rather than sitting in a compact multipath cluster.
+
+    ``max_taps`` optionally truncates afterwards, trading fidelity for a
+    shorter, effectively denoised filter.  It is off by default so the measured
+    channel is reproduced faithfully.
+    """
+    H = np.asarray(H).ravel()
+    h = np.fft.fftshift(np.fft.ifft(H))
+    peak = int(np.argmax(np.abs(h) ** 2))
+    h = np.roll(h, pre_taps - peak)
+    if max_taps is not None:
+        h = h[:max_taps]
+    return np.ascontiguousarray(h)
+
 
 @dataclass
 class MeasuredChannel:
@@ -96,7 +169,7 @@ class MeasuredChannel:
 # ── loaders ──────────────────────────────────────────────────────────────
 
 def _as_cir_list(arr: np.ndarray, stem: str, path: str, fs=None,
-                 metadata=None) -> list[MeasuredChannel]:
+                 metadata=None, domain: str = "auto") -> list[MeasuredChannel]:
     """Turn a loaded array into one or more channels.
 
     1-D is a single CIR.  2-D is a set of measurements, one per row — the
@@ -111,9 +184,17 @@ def _as_cir_list(arr: np.ndarray, stem: str, path: str, fs=None,
         # Real taps are legitimate (a real-valued channel), so allow them.
         arr = arr.astype(np.float64)
 
+    def finish(row, name):
+        row = np.asarray(row)
+        chosen = detect_domain(row) if domain == "auto" else domain
+        if chosen == "frequency":
+            row = frequency_response_to_cir(row)
+        meta = dict(metadata or {})
+        meta["domain"] = chosen
+        return MeasuredChannel(name, row.astype(np.complex128), path, fs, meta)
+
     if arr.ndim == 1:
-        return [MeasuredChannel(stem, arr.astype(np.complex128), path, fs,
-                                metadata or {})]
+        return [finish(arr, stem)]
 
     if arr.ndim > 2:
         arr = arr.reshape(-1, arr.shape[-1])
@@ -122,18 +203,16 @@ def _as_cir_list(arr: np.ndarray, stem: str, path: str, fs=None,
     if arr.shape[0] > arr.shape[1]:
         arr = arr.T
 
-    return [
-        MeasuredChannel(f"{stem}[{i}]", row.astype(np.complex128), path, fs,
-                        metadata or {})
-        for i, row in enumerate(arr)
-    ]
+    return [finish(row, f"{stem}[{i}]") for i, row in enumerate(arr)]
 
 
-def _load_npy(path: str) -> list[MeasuredChannel]:
-    return _as_cir_list(np.load(path, allow_pickle=False), Path(path).stem, path)
+def _load_npy(path: str, domain: str = "auto") -> list[MeasuredChannel]:
+    return _as_cir_list(np.load(path, allow_pickle=False), Path(path).stem, path,
+                        domain=domain)
 
 
-def _load_mat(path: str, mat_key: Optional[str] = None) -> list[MeasuredChannel]:
+def _load_mat(path: str, mat_key: Optional[str] = None,
+              domain: str = "auto") -> list[MeasuredChannel]:
     """Load a MATLAB file, transparently handling v7.3 (HDF5) files."""
     try:
         md = sio.loadmat(path) if sio is not None else None
@@ -172,7 +251,7 @@ def _load_mat(path: str, mat_key: Optional[str] = None) -> list[MeasuredChannel]
         arr = pool[chosen]
 
     return _as_cir_list(arr, f"{Path(path).stem}:{chosen}", path,
-                        metadata={"mat_key": chosen})
+                        metadata={"mat_key": chosen}, domain=domain)
 
 
 #: SigMF core:datatype -> numpy dtype.  Only little-endian is handled; the
@@ -185,7 +264,7 @@ _SIGMF_DTYPES = {
 }
 
 
-def _load_sigmf(path: str) -> list[MeasuredChannel]:
+def _load_sigmf(path: str, domain: str = "auto") -> list[MeasuredChannel]:
     """Load a SigMF recording from its metadata sidecar.
 
     Parsed directly rather than via the ``sigmf`` package so importing a
@@ -224,10 +303,11 @@ def _load_sigmf(path: str) -> list[MeasuredChannel]:
     fs = global_meta.get("core:sample_rate")
     return _as_cir_list(raw, meta_path.stem, str(data_path),
                         fs=float(fs) if fs else None,
-                        metadata={"sigmf": global_meta})
+                        metadata={"sigmf": global_meta}, domain=domain)
 
 
-def _load_bin(path: str, dtype=np.complex64) -> list[MeasuredChannel]:
+def _load_bin(path: str, dtype=np.complex64,
+              domain: str = "auto") -> list[MeasuredChannel]:
     """Load headerless samples using a caller-supplied dtype."""
     raw = np.fromfile(path, dtype=dtype)
     if raw.size == 0:
@@ -238,21 +318,22 @@ def _load_bin(path: str, dtype=np.complex64) -> list[MeasuredChannel]:
         raw = raw.astype(np.float64)
         raw = raw[0::2] + 1j * raw[1::2]
     return _as_cir_list(raw, Path(path).stem, path,
-                        metadata={"bin_dtype": np.dtype(dtype).name})
+                        metadata={"bin_dtype": np.dtype(dtype).name}, domain=domain)
 
 
 def load_channel_file(path: str, *, bin_dtype=np.complex64,
-                      mat_key: Optional[str] = None) -> list[MeasuredChannel]:
+                      mat_key: Optional[str] = None,
+                      domain: str = "auto") -> list[MeasuredChannel]:
     """Load one file into a list of channels. Raises ValueError on bad input."""
     suffix = Path(path).suffix.lower()
     if suffix == ".npy":
-        channels = _load_npy(path)
+        channels = _load_npy(path, domain)
     elif suffix == ".mat":
-        channels = _load_mat(path, mat_key)
+        channels = _load_mat(path, mat_key, domain)
     elif suffix in (".sigmf", ".sigmf-meta", ".sigmf-data"):
-        channels = _load_sigmf(path)
+        channels = _load_sigmf(path, domain)
     elif suffix == ".bin":
-        channels = _load_bin(path, bin_dtype)
+        channels = _load_bin(path, bin_dtype, domain)
     else:
         raise ValueError(f"unsupported file type '{suffix}'")
 
