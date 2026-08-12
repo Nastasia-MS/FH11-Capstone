@@ -727,6 +727,7 @@ class WaveformSelectionTab(QWidget):
                             alpha=self.alpha,
                             span=self.span,
                             pulse_shape=self.pulse_shape_combo.currentText(),
+                            output_type=self.output_type,
                         )
                         data = result["signal"]
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -750,6 +751,7 @@ class WaveformSelectionTab(QWidget):
                             "alpha":       self.alpha,
                             "span":        self.span,
                             "pulse_shape": self.pulse_shape_combo.currentText(),
+                            "output_type": self.output_type,
                             "timestamp":   timestamp,
                             "generator":   result.get("generator"),
                         }
@@ -825,6 +827,7 @@ class WaveformSelectionTab(QWidget):
                         alpha=self.alpha,
                         span=self.span,
                         pulse_shape=self.pulse_shape_combo.currentText(),
+                        output_type=self.output_type,
                     )
                     data = result["signal"]
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -842,6 +845,7 @@ class WaveformSelectionTab(QWidget):
                         "alpha":       self.alpha,
                         "span":        self.span,
                         "pulse_shape": self.pulse_shape_combo.currentText(),
+                        "output_type": self.output_type,
                         "timestamp":   timestamp,
                         "generator":   result.get("generator"),
                     }

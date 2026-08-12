@@ -647,6 +647,75 @@ class DataVisualizationTab(QWidget):
             self._class_checkboxes[cls] = cb
             insert_pos += 1
 
+    def _extract_features(self, sig, use_raw, use_fft, use_stats):
+        """Build one feature vector from a raw signal.
+
+        Complex baseband is kept complex so both quadrature components
+        contribute: raw samples become interleaved [I0, Q0, I1, Q1, ...] and
+        the spectrum uses the full two-sided FFT.  Taking ``.real`` here (as
+        this used to) threw Q away, so QAM and PSK collapsed onto each other
+        in the projection — their in-phase components are near-identical and
+        the phase information that separates them lives in Q.
+
+        Real passband signals keep their previous raw and spectrum blocks
+        byte-for-byte (they skip the interleave and still use ``rfft``).  The
+        stats block does change for them: it now describes ``abs(sig)`` rather
+        than the signed samples, because percentiles are undefined for complex
+        values and one definition has to cover both.  ``max`` and the energy
+        sum are unaffected; mean/std/percentiles shift, so a saved projection
+        from before this change is not directly comparable.
+
+        Either dtype yields the same feature width (256 raw + 256 spectrum +
+        8 stats), so a folder mixing real and complex files still stacks into
+        a single matrix.
+        """
+        sig = np.asarray(sig).flatten()
+        is_complex = np.iscomplexobj(sig)
+        feats = []
+
+        if use_raw:
+            if is_complex:
+                # 128 complex samples -> 256 interleaved reals, so the raw
+                # feature block stays 256 wide however the data arrives.
+                head = sig[:128]
+                raw = np.empty(2 * len(head), dtype=np.float32)
+                raw[0::2] = head.real
+                raw[1::2] = head.imag
+            else:
+                raw = sig[:256].astype(np.float32)
+            if len(raw) < 256:
+                raw = np.pad(raw, (0, 256 - len(raw)))
+            feats.append(raw)
+
+        if use_fft:
+            # np.fft.rfft rejects complex input outright, so use the two-sided
+            # transform.  For complex baseband the negative half is real
+            # information (it is not a mirror of the positive half).
+            window = sig[:512]
+            if is_complex:
+                spec = np.fft.fftshift(np.fft.fft(window))
+            else:
+                spec = np.fft.rfft(window)
+            fft_mag = np.abs(spec)[:256].astype(np.float32)
+            if len(fft_mag) < 256:
+                fft_mag = np.pad(fft_mag, (0, 256 - len(fft_mag)))
+            fft_mag /= (fft_mag.max() + 1e-9)
+            feats.append(fft_mag)
+
+        if use_stats:
+            # Percentiles are undefined for complex values, so describe the
+            # magnitude envelope and report I/Q spread separately.
+            mag = np.abs(sig)
+            stats = np.array([
+                mag.mean(), mag.std(), np.percentile(mag, 25),
+                np.percentile(mag, 75), mag.max(),
+                float(np.sum(mag ** 2)),
+                sig.real.std(), sig.imag.std() if is_complex else 0.0,
+            ], dtype=np.float32)
+            feats.append(stats)
+
+        return np.concatenate(feats) if feats else None
+
     def _collect_features(self, data_dir, max_per_class):
         """Load .npy files and extract feature vectors."""
         classes = sorted([
@@ -664,29 +733,10 @@ class DataVisualizationTab(QWidget):
             files = sorted([f for f in os.listdir(cls_dir) if f.endswith(".npy")])
             files = files[:max_per_class]
             for fpath in files:
-                sig = np.load(os.path.join(cls_dir, fpath)).flatten()
-                sig = sig.real.astype(np.float32)   # use real part
-                feats = []
-                if use_raw:
-                    raw = sig[:256]
-                    if len(raw) < 256:
-                        raw = np.pad(raw, (0, 256 - len(raw)))
-                    feats.append(raw)
-                if use_fft:
-                    fft_mag = np.abs(np.fft.rfft(sig[:512]))[:256]
-                    if len(fft_mag) < 256:
-                        fft_mag = np.pad(fft_mag, (0, 256 - len(fft_mag)))
-                    fft_mag /= (fft_mag.max() + 1e-9)
-                    feats.append(fft_mag)
-                if use_stats:
-                    stats = np.array([
-                        sig.mean(), sig.std(), np.percentile(sig, 25),
-                        np.percentile(sig, 75), np.abs(sig).max(),
-                        float(np.sum(sig**2))
-                    ], dtype=np.float32)
-                    feats.append(stats)
-                if feats:
-                    X_list.append(np.concatenate(feats))
+                sig = np.load(os.path.join(cls_dir, fpath))
+                feats = self._extract_features(sig, use_raw, use_fft, use_stats)
+                if feats is not None:
+                    X_list.append(feats)
                     y_list.append(ci)
 
         if not X_list:
@@ -717,29 +767,10 @@ class DataVisualizationTab(QWidget):
             files = registry[cls][:max_per_class]
             for fpath in files:
                 try:
-                    sig = np.load(fpath).flatten()
-                    sig = sig.real.astype(np.float32)
-                    feats = []
-                    if use_raw:
-                        raw = sig[:256]
-                        if len(raw) < 256:
-                            raw = np.pad(raw, (0, 256 - len(raw)))
-                        feats.append(raw)
-                    if use_fft:
-                        fft_mag = np.abs(np.fft.rfft(sig[:512]))[:256]
-                        if len(fft_mag) < 256:
-                            fft_mag = np.pad(fft_mag, (0, 256 - len(fft_mag)))
-                        fft_mag /= (fft_mag.max() + 1e-9)
-                        feats.append(fft_mag)
-                    if use_stats:
-                        stats = np.array([
-                            sig.mean(), sig.std(), np.percentile(sig, 25),
-                            np.percentile(sig, 75), np.abs(sig).max(),
-                            float(np.sum(sig**2))
-                        ], dtype=np.float32)
-                        feats.append(stats)
-                    if feats:
-                        X_list.append(np.concatenate(feats))
+                    sig = np.load(fpath)
+                    feats = self._extract_features(sig, use_raw, use_fft, use_stats)
+                    if feats is not None:
+                        X_list.append(feats)
                         y_list.append(ci)
                 except Exception as e:
                     print(f"[DataViz] Could not load {fpath}: {e}")
