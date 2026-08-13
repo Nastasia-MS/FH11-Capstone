@@ -363,6 +363,14 @@ class TrainerThread(QThread):
         try:
             torch.save(model.state_dict(), save_path)
             # Save companion metadata
+            # Record where the training data came from.  Without this a saved
+            # model is indistinguishable from any other with the same shape, so
+            # two runs that differ only in their input folder -- exactly what a
+            # channel-condition comparison is -- produce sidecars that cannot be
+            # told apart afterwards.
+            source_dirs = sorted({os.path.dirname(p) for p, _ in self.file_label_pairs})
+            common_root = os.path.commonpath(source_dirs) if source_dirs else ""
+
             metadata = {
                 "model_name": self.model_name,
                 "class_labels": self.labels,
@@ -370,6 +378,13 @@ class TrainerThread(QThread):
                 "input_channels": input_channels,
                 "signal_length": signal_len,
                 "timestamp": timestamp,
+                "training_data_root": common_root,
+                "training_class_dirs": source_dirs,
+                "num_training_files": len(self.file_label_pairs),
+                "epochs": self.epochs,
+                "batch_size": self.batch_size,
+                "learning_rate": self.lr,
+                "val_split": self.val_split,
             }
             with open(meta_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
