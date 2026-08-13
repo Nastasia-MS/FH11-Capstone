@@ -140,6 +140,12 @@ function [sig, symbols_out] = waveform_generator(output_len, fs, Tsymb, fc, M, m
         return;
     end
 
+    if strcmpi(modulation, 'LoRa')
+        sig = generate_lora_signal(output_len, fs, Tsymb, fc, M, output_type);
+        symbols_out = [];
+        return;
+    end
+
     %% Generate symbols based on modulation type
     symbols = generate_symbols(num_symbols, M, modulation);
     symbols_out = symbols(:);
@@ -672,6 +678,169 @@ function sig = generate_zigbee_signal(output_len, fs, fc, output_type)
         error('Zigbee generation failed (need Communications Toolbox): %s', ...
               ME.message);
     end
+end
+
+
+function sig = generate_lora_signal(output_len, fs, Tsymb, fc, M, output_type)
+    % GENERATE_LORA_SIGNAL - LoRa CSS (chirp spread spectrum) baseband packet
+    % No toolbox required -- CSS is generated in closed form below.
+    %
+    % Adapted from the reference implementation in
+    % wireless_waveforms/protocols/lora/lora.m, which follows the Semtech
+    % SX127x packet structure.  Two deliberate departures, to match how every
+    % other family in this file behaves:
+    %
+    %   1. Parameters follow this file's conventions rather than LoRa-specific
+    %      name/value pairs.  M selects the spreading factor and Tsymb sets the
+    %      CSS bandwidth, so the Waveform tab's existing controls drive it.
+    %   2. The reference asserts that one complete packet fits in N and
+    %      right-zero-pads it.  Here the packet is tiled or clipped to
+    %      output_len like WiFi/LTE/5G NR/Zigbee, because the datasets this
+    %      toolbox is compared against are continuous mid-capture clips with no
+    %      silent tail.  A random clip offset inside the active region gives
+    %      per-call variety; when the packet is shorter than output_len it is
+    %      repeated rather than padded.
+    %
+    % M  -> spreading factor directly, clamped to the 7..12 LoRa range (the same
+    %       convention Barker uses, where M selects a code length rather than a
+    %       constellation order).  M values below 7 clamp to SF 7, the most
+    %       common LoRa setting, so the tab's default M = 4 is still valid.
+    % Tsymb -> oversampling factor, via sps = round(fs*Tsymb), which is the same
+    %       quantity every other family in this file derives from Tsymb.  The CSS
+    %       bandwidth is then BW = fs/sps, so sps = 8 at 30.72 Msps gives a
+    %       3.84 MHz chirp and sps = 246 gives standard 125 kHz LoRa.
+    %
+    %       Deriving BW from sps rather than as 1/Tsymb matters: waveform_generator
+    %       requires fs*Tsymb to be an integer (a pulse-shaping constraint), and
+    %       setting BW = 1/Tsymb directly would force the LoRa bandwidth to be a
+    %       divisor of fs, which has nothing to do with CSS and made useful
+    %       bandwidths unreachable from the UI.
+    try
+        SF = max(7, min(12, round(M)));
+        chips = 2^SF;
+
+        sps = max(2, round(fs * Tsymb));   % oversampling factor per chip
+        BW = fs / sps;                     % CSS bandwidth
+        Ns = chips * sps;                  % samples per CSS symbol
+
+        % Packet layout: preamble up-chirps, 2 sync up-chirps, 2.25 symbol SFD
+        % of down-chirps, then payload chirps carrying random symbol values.
+        preamble_syms = 8;
+        n_sync_syms   = 2;
+        sfd_full_syms = 2;
+        sfd_quarter   = round(0.25 * Ns);
+
+        % Enough payload symbols that the active packet covers output_len even
+        % before tiling, so a clip can be taken without crossing the tail.
+        min_payload = 8;
+        need_syms = ceil((output_len + sfd_quarter) / Ns) + 1;
+        n_payload_syms = max(min_payload, need_syms);
+
+        payload_syms = randi([0, chips - 1], n_payload_syms, 1);
+
+        % Build with analytic phase continuity across symbol boundaries.
+        phi = 0;
+        parts = cell(0);
+        for s = 1:preamble_syms
+            [c, phi] = lora_chirp(0, chips, Ns, BW, fs, phi, false);
+            parts{end+1} = c; %#ok<AGROW>
+        end
+        for s = 1:n_sync_syms
+            [c, phi] = lora_chirp(0, chips, Ns, BW, fs, phi, false);
+            parts{end+1} = c; %#ok<AGROW>
+        end
+        for s = 1:sfd_full_syms
+            [c, phi] = lora_chirp(0, chips, Ns, BW, fs, phi, true);
+            parts{end+1} = c; %#ok<AGROW>
+        end
+        [c, phi] = lora_chirp(0, chips, Ns, BW, fs, phi, true, sfd_quarter);
+        parts{end+1} = c;
+        for s = 1:n_payload_syms
+            [c, phi] = lora_chirp(payload_syms(s), chips, Ns, BW, fs, phi, false);
+            parts{end+1} = c; %#ok<AGROW>
+        end
+
+        sig_bb = vertcat(parts{:});
+        sig_bb = sig_bb(:);
+
+        % Unit average power over the packet.
+        pwr = mean(abs(sig_bb).^2);
+        if pwr > 0
+            sig_bb = sig_bb / sqrt(pwr);
+        end
+
+        % Clip or tile to output_len.  When the packet is longer, take a random
+        % offset so repeated calls are not identical; the whole packet is
+        % active signal, so any offset is valid.
+        if numel(sig_bb) > output_len
+            max_off = numel(sig_bb) - output_len;
+            off = randi([0, max_off]);
+            sig_bb = sig_bb(off + (1:output_len));
+        else
+            while numel(sig_bb) < output_len
+                sig_bb = [sig_bb; sig_bb]; %#ok<AGROW>
+            end
+            sig_bb = sig_bb(1:output_len);
+        end
+
+        if strcmpi(output_type, 'baseband')
+            sig = complex(sig_bb);
+        else
+            sig = upconvert_to_passband(sig_bb, fs, fc, output_len);
+        end
+    catch ME
+        error('LoRa generation failed: %s', ME.message);
+    end
+end
+
+
+function [c, phi_next] = lora_chirp(k, chips, Ns, BW, fs, phi_start, downchirp, cut)
+    % LORA_CHIRP - one LoRa CSS symbol with analytically correct wrap.
+    %
+    % Centred instantaneous normalised frequency:
+    %   f(n) = mod(k/chips + n/Ns, 1) - 0.5
+    % which wraps at the generally non-integer time tw = (1 - k/chips)*Ns.
+    % Integrating f analytically in two segments about that floating wrap point
+    % keeps the phase continuous and avoids the per-symbol error that a
+    % floor()-quantised wrap would accumulate.  phi_next is the analytic phase
+    % at the end boundary, so continuity does not depend on angle() and its
+    % 2*pi ambiguity.
+    if nargin < 8
+        cut = Ns;
+    end
+
+    scale = BW / fs;
+    tw = (1 - k / chips) * Ns;
+
+    n = (0 : Ns - 1).';
+    before = n < tw;
+    phase = zeros(Ns, 1);
+
+    dn1 = n(before);
+    phase(before) = 2*pi * scale * ((k/chips - 0.5) * dn1 + dn1.^2 / (2*Ns));
+
+    phi_tw = 2*pi * scale * ((k/chips - 0.5) * tw + tw^2 / (2*Ns));
+
+    dn2 = n(~before) - tw;
+    phase(~before) = phi_tw + 2*pi * scale * (-0.5 * dn2 + dn2.^2 / (2*Ns));
+
+    if downchirp
+        phase = -phase;
+    end
+
+    c = exp(1j * (phase(1:cut) + phi_start));
+
+    nb = double(cut);
+    if nb <= tw
+        phi_boundary = 2*pi * scale * ((k/chips - 0.5) * nb + nb^2 / (2*Ns));
+    else
+        dnb = nb - tw;
+        phi_boundary = phi_tw + 2*pi * scale * (-0.5 * dnb + dnb^2 / (2*Ns));
+    end
+    if downchirp
+        phi_boundary = -phi_boundary;
+    end
+    phi_next = phi_boundary + phi_start;
 end
 
 

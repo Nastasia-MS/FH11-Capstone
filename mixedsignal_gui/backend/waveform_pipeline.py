@@ -9,7 +9,7 @@ class WaveformPipeline:
         self.matlab_engine = matlab_engine
 
     def generate(self, *, fs, Tsymb, Nsymb, fc, M, modulation,
-                 var, alpha, span, pulse_shape, output_type="passband"):
+                 var, alpha, span, pulse_shape, output_type="baseband"):
         waveform = Waveform(
             fs=fs,
             Tsymb=Tsymb,

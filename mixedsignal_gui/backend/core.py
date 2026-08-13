@@ -18,7 +18,10 @@ class WaveformConfig:
     alpha: float = 0.35
     span: int = 8
     pulse_shape: str = "rrc"
-    output_type: str = "passband"
+    # Complex IQ by default: the channel models require it (both the stochastic
+    # TDL and Sionna RT paths refuse a real passband array) and the classifiers
+    # consume it as two input channels.
+    output_type: str = "baseband"
 
     def __post_init__(self):
         if isinstance(self.M, float) and self.M.is_integer():
@@ -37,7 +40,7 @@ class WaveformConfig:
 
     # Modulations that bypass pulse shaping and don't return symbols
     _NO_SYMBOL_MODS = {"FSK", "FHSS", "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR",
-                       "Zigbee"}
+                       "Zigbee", "LoRa"}
 
     def _validate(self):
         sps = self.fs * self.Tsymb
@@ -66,7 +69,7 @@ class WaveformConfig:
             # M maps to nearest valid Barker length (2,3,4,5,7,11,13)
             if self.M < 2:
                 raise ValueError("Barker requires M >= 2")
-        elif self.modulation in ("WiFi", "LTE", "5G_NR", "Zigbee"):
+        elif self.modulation in ("WiFi", "LTE", "5G_NR", "Zigbee", "LoRa"):
             # Standards waveforms — M is unused by the MATLAB generator
             pass
         else:
@@ -109,7 +112,7 @@ class Waveform:
         alpha: float = 0.35,
         span: int = 8,
         pulse_shape: str = "rrc",
-        output_type: str = "passband",
+        output_type: str = "baseband",
     ):
         self.config = WaveformConfig(
             modulation=modulation,

@@ -24,7 +24,8 @@ class QuickTestDataDialog(QDialog):
         
         self.modulations_available = ["PAM", "QAM", "PSK", "FSK", "FHSS",
                                       "LFM", "Barker", "FMCW",
-                                      "WiFi", "LTE", "5G_NR", "Zigbee"]
+                                      "WiFi", "LTE", "5G_NR", "Zigbee",
+                                      "LoRa"]
         self.selected_modulations = set(self.modulations_available)  # All selected by default
 
         # M values for minimal test: just 1-2 M values per modulation
@@ -41,6 +42,7 @@ class QuickTestDataDialog(QDialog):
             "LTE":    [4],
             "5G_NR":  [4],
             "Zigbee": [4],
+            "LoRa":   [7],
         }
 
         self.setup_ui()
@@ -116,7 +118,7 @@ class BatchGenerationConfigDialog(QDialog):
         self.global_params = global_params
         self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS",
                             "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR",
-                            "Zigbee"]
+                            "Zigbee", "LoRa"]
 
         # Default M values for each modulation
         self.default_m_values = {
@@ -132,6 +134,7 @@ class BatchGenerationConfigDialog(QDialog):
             "LTE":    [4],
             "5G_NR":  [4],
             "Zigbee": [4],
+            "LoRa":   [7],
         }
 
         # Sensible defaults for waveforms that need higher fs / different fc.
@@ -152,6 +155,11 @@ class BatchGenerationConfigDialog(QDialog):
             'LTE':    {'fs_override': 30.72e6, 'fc_override': 3.5e9},
             '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 3.5e9},
             'Zigbee': {'fs_override': 30.72e6, 'fc_override': 3.5e9},
+            # LoRa: Tsymb sets the oversampling factor sps = fs*Tsymb, and the
+            # CSS bandwidth is fs/sps.  8/30.72e6 gives sps = 8 -> 3.84 MHz,
+            # whose occupied bandwidth matches the reference LoRa captures.
+            'LoRa':   {'fs_override': 30.72e6, 'fc_override': 3.5e9,
+                       'Tsymb_override': 8 / 30.72e6},
         }
 
         # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
@@ -318,7 +326,7 @@ class WaveformSelectionTab(QWidget):
         self.Nsymb = 256
         self.span = 10
         self.modulation = "PAM"
-        self.output_type = "passband"
+        self.output_type = "baseband"
 
         self.current_data = None
         self.current_fs = None
@@ -356,7 +364,8 @@ class WaveformSelectionTab(QWidget):
         self.waveform_combo = QComboBox()
         self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
                                           "LFM", "Barker", "FMCW",
-                                          "WiFi", "LTE", "5G_NR", "Zigbee"])
+                                          "WiFi", "LTE", "5G_NR", "Zigbee",
+                                          "LoRa"])
         mark_unavailable_modulations(self.waveform_combo, self.matlab)
         layout.addWidget(self.waveform_combo)
 
@@ -405,6 +414,11 @@ class WaveformSelectionTab(QWidget):
         layout.addWidget(QLabel("Symbol Period Tsymb (µs)"))
         self.tsymb_spin = QDoubleSpinBox()
         self.tsymb_spin.setRange(0.01, 100.0)
+        # 5 decimals: the generator requires fs*Tsymb to be an integer, and at
+        # multi-Msps rates the values that satisfy that are not round numbers in
+        # microseconds (30.72 Msps with 8 samples per symbol needs 0.26042 us).
+        # At the old 2-decimal precision those settings could not be typed at all.
+        self.tsymb_spin.setDecimals(5)
         self.tsymb_spin.setValue(self.Tsymb * 1e6)  # Convert to microseconds for display
         self.tsymb_spin.valueChanged.connect(lambda v: setattr(self, "Tsymb", v * 1e-6))  # Convert back to seconds
         layout.addWidget(self.tsymb_spin)
@@ -449,10 +463,14 @@ class WaveformSelectionTab(QWidget):
         output_type_label = QLabel("Output Type")
         layout.addWidget(output_type_label)
 
+        # Baseband first, so it is the default selection.  Complex IQ is what the
+        # channel models require (the stochastic TDL and Sionna RT paths refuse a
+        # real passband array outright) and what the classifiers train on as two
+        # channels, so it is the right default for the workflow this tab feeds.
         self.output_type_combo = QComboBox()
-        self.output_type_combo.addItems(["Passband (Real)", "Baseband (Complex IQ)"])
+        self.output_type_combo.addItems(["Baseband (Complex IQ)", "Passband (Real)"])
         self.output_type_combo.currentIndexChanged.connect(
-            lambda idx: setattr(self, "output_type", "passband" if idx == 0 else "baseband")
+            lambda idx: setattr(self, "output_type", "baseband" if idx == 0 else "passband")
         )
         layout.addWidget(self.output_type_combo)
 

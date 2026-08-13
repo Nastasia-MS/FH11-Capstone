@@ -65,7 +65,7 @@ class EvaluateModelTab(QWidget):
         self.Nsymb = 256
         self.span = 10
 
-        self.output_type = "passband"
+        self.output_type = "baseband"
 
         self._last_signal = None
         self._last_modulation = None
@@ -143,7 +143,8 @@ class EvaluateModelTab(QWidget):
         self.waveform_combo = QComboBox()
         self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
                                           "LFM", "Barker", "FMCW",
-                                          "WiFi", "LTE", "5G_NR", "Zigbee"])
+                                          "WiFi", "LTE", "5G_NR", "Zigbee",
+                                          "LoRa"])
         mark_unavailable_modulations(self.waveform_combo, self.eng)
         self.waveform_combo.currentTextChanged.connect(self._on_waveform_changed)
         layout.addWidget(self.waveform_combo)
@@ -187,6 +188,7 @@ class EvaluateModelTab(QWidget):
         layout.addWidget(QLabel("Symbol Period Tsymb (µs)"))
         self.tsymb_spin = QDoubleSpinBox()
         self.tsymb_spin.setRange(0.01, 100.0)
+        self.tsymb_spin.setDecimals(5)   # see Waveform Selection tab for why
         self.tsymb_spin.setValue(self.Tsymb * 1e6)
         self.tsymb_spin.valueChanged.connect(lambda v: setattr(self, "Tsymb", v * 1e-6))
         layout.addWidget(self.tsymb_spin)
@@ -225,10 +227,12 @@ class EvaluateModelTab(QWidget):
 
         # Output Type (matches Waveform Selection tab)
         layout.addWidget(QLabel("Output Type"))
+        # Baseband first (default) to match the Waveform Selection tab; see the
+        # comment there for why complex IQ is the right default.
         self.output_type_combo = QComboBox()
-        self.output_type_combo.addItems(["Passband (Real)", "Baseband (Complex IQ)"])
+        self.output_type_combo.addItems(["Baseband (Complex IQ)", "Passband (Real)"])
         self.output_type_combo.currentIndexChanged.connect(
-            lambda idx: setattr(self, "output_type", "passband" if idx == 0 else "baseband")
+            lambda idx: setattr(self, "output_type", "baseband" if idx == 0 else "passband")
         )
         layout.addWidget(self.output_type_combo)
 
@@ -608,6 +612,9 @@ class EvaluateModelTab(QWidget):
         'LTE':    {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
         '5G_NR':  {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
         'Zigbee': {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
+        # LoRa: M is the spreading factor and Tsymb sets the CSS bandwidth
+        # (BW = 1/Tsymb), so 0.25 us gives a 4 MHz chirp.
+        'LoRa':   {'fs': 30.72e6, 'fc': 10e6, 'Tsymb': 8 / 30.72e6, 'M': 7},
     }
 
     def _on_waveform_changed(self, modulation):
