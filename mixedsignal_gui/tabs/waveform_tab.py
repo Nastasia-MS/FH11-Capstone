@@ -185,6 +185,15 @@ class BatchGenerationConfigDialog(QDialog):
         
         layout.addWidget(QLabel("Configure per-modulation parameters for batch generation"))
         
+        # Output type selector
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Output type:"))
+        self._output_type_combo = QComboBox()
+        self._output_type_combo.addItems(["Passband (Real)", "Baseband (Complex IQ)"])
+        output_row.addWidget(self._output_type_combo)
+        output_row.addStretch()
+        layout.addLayout(output_row)
+        
         # Scroll area for modulation configs
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -309,7 +318,10 @@ class BatchGenerationConfigDialog(QDialog):
     
     def get_config(self):
         """Return the configured parameters."""
-        return self.config
+        return {
+            **self.config,
+            "_output_type": "passband" if self._output_type_combo.currentIndex() == 0 else "baseband",
+        }
 
 
 class WaveformSelectionTab(QWidget):
@@ -729,7 +741,10 @@ class WaveformSelectionTab(QWidget):
             return  # User cancelled
         
         batch_config = dialog.get_config()
-
+        # Ours: every enabled family, driven by the dialog's own checkboxes.
+        # The bulk branch hardcoded a five-entry list and pulled output type from
+        # a combo inside the dialog; the tab-level combo is authoritative now and
+        # covers all thirteen families.
         modulations = list(batch_config.keys())
         from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
         pipeline = WaveformPipeline(self.matlab)

@@ -1,18 +1,25 @@
+from datetime import datetime
+
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog,
                                QPushButton, QFrame, QTableWidget, QTableWidgetItem,
                                QHeaderView, QSlider, QGridLayout, QComboBox,
                                QDoubleSpinBox, QSpinBox, QStackedWidget, QMessageBox,
-                               QButtonGroup, QCheckBox, QScrollArea)
+                               QButtonGroup, QCheckBox, QScrollArea, QProgressDialog)
 from PySide6.QtCore import Qt, QSettings
+
 from PySide6.QtGui import QPalette, QColor
 
 from mixedsignal_gui.widgets.toggle_switch import ToggleSwitch
 from mixedsignal_gui.widgets.noise_spectrum import NoiseSpectrumWidget
 from mixedsignal_gui.widgets.waveform_plots import PlottingWidget
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
+from mixedsignal_gui.widgets.range_spinbox import RangeSpinBox
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift,
                                   StochasticTDLAugmentation, SionnaRTAugmentation)
+from mixedsignal_gui.backend.parameter_range import ParameterRange
+from mixedsignal_gui.backend.bulk_augmentation import BulkAugmentationThread
+from mixedsignal_gui.backend.dataset_manager import DatasetManager
 from mixedsignal_gui.sionna_widget.scenes import available_scenes
 import numpy as np
 import json
@@ -169,10 +176,10 @@ class ChannelNoiseTab(QWidget):
         apply_btn.clicked.connect(self.apply_augmentations)
         layout.addWidget(apply_btn)
 
-        # Save Augmented Dataset Button
-        save_btn = QPushButton("Save Augmented Dataset")
-        save_btn.clicked.connect(self.save_augmented_dataset)
-        layout.addWidget(save_btn)
+        # Bulk Apply Button
+        bulk_btn = QPushButton("Apply to a Dataset Folder")
+        bulk_btn.clicked.connect(self.apply_to_all_in_folder)
+        layout.addWidget(bulk_btn)
 
         return panel
 
@@ -237,20 +244,36 @@ class ChannelNoiseTab(QWidget):
         awgn_header.addWidget(self.awgn_toggle)
         layout.addLayout(awgn_header)
 
-        # SNR Slider — wrapped so we can grey-out when toggle is off
+        # SNR as a RangeSpinBox (from the bulk-augmentation work) kept inside the
+        # grey-out wrapper this tab already used, so the control both supports a
+        # per-file swept range and still visibly disables with the toggle.
         self.awgn_controls = QWidget()
         awgn_ctrl_layout = QVBoxLayout(self.awgn_controls)
         awgn_ctrl_layout.setContentsMargins(0, 0, 0, 0)
-        snr_slider_layout = self.create_slider_control(
-            "SNR (dB)", self.snr_db, "dB", -10, 40, "snr_db"
-        )
-        awgn_ctrl_layout.addLayout(snr_slider_layout)
+
+        self.snr_spin = RangeSpinBox()
+        snr_header = QHBoxLayout()
+        snr_header.addWidget(QLabel("SNR (dB)"))
+        snr_header.addStretch()
+        snr_header.addWidget(self.snr_spin.vary_checkbox)
+        awgn_ctrl_layout.addLayout(snr_header)
+        self.snr_spin.setRange(-10.0, 40.0)
+        self.snr_spin.setSingleStep(1.0)
+        self.snr_spin.setDecimals(1)
+        self.snr_spin.setSuffix(" dB")
+        self.snr_spin.setValue(self.snr_db)
+        self.snr_spin.valueChanged.connect(lambda v: setattr(self, 'snr_db', v))
+        awgn_ctrl_layout.addWidget(self.snr_spin)
+
         self.awgn_controls.setEnabled(self.awgn_enabled)
         layout.addWidget(self.awgn_controls)
 
         def _on_awgn_toggled(checked):
             self.awgn_enabled = checked
             self.awgn_controls.setEnabled(checked)
+            self.snr_spin.vary_checkbox.setEnabled(checked)
+            if not checked:
+                self.snr_spin.vary_checkbox.setChecked(False)
         self.awgn_toggle.toggled.connect(_on_awgn_toggled)
 
         sep = QFrame()
@@ -274,27 +297,36 @@ class ChannelNoiseTab(QWidget):
         amp_phase_header.addWidget(self.amp_phase_toggle)
         layout.addLayout(amp_phase_header)
 
-        # Amp/Phase controls — wrapped so we can grey-out when toggle is off
+        # Amp/Phase controls — RangeSpinBoxes inside the grey-out wrapper.
         self.amp_phase_controls = QWidget()
         ap_ctrl_layout = QVBoxLayout(self.amp_phase_controls)
         ap_ctrl_layout.setContentsMargins(0, 0, 0, 0)
 
-        amp_label = QLabel("Amplitude Scaling")
-        ap_ctrl_layout.addWidget(amp_label)
-        self.amplitude_spin = QDoubleSpinBox()
+        self.amplitude_spin = RangeSpinBox()
         self.amplitude_spin.setRange(0.0, 5.0)
         self.amplitude_spin.setSingleStep(0.1)
+        self.amplitude_spin.setDecimals(2)
         self.amplitude_spin.setValue(self.amplitude)
         self.amplitude_spin.valueChanged.connect(lambda v: setattr(self, 'amplitude', v))
+        amp_header = QHBoxLayout()
+        amp_header.addWidget(QLabel("Amplitude Scaling"))
+        amp_header.addStretch()
+        amp_header.addWidget(self.amplitude_spin.vary_checkbox)
+        ap_ctrl_layout.addLayout(amp_header)
         ap_ctrl_layout.addWidget(self.amplitude_spin)
 
-        phase_label = QLabel("Phase Shift (degrees)")
-        ap_ctrl_layout.addWidget(phase_label)
-        self.phase_spin = QDoubleSpinBox()
+        self.phase_spin = RangeSpinBox()
         self.phase_spin.setRange(-180.0, 180.0)
         self.phase_spin.setSingleStep(5.0)
+        self.phase_spin.setDecimals(1)
+        self.phase_spin.setSuffix("°")
         self.phase_spin.setValue(self.phase_deg)
         self.phase_spin.valueChanged.connect(lambda v: setattr(self, 'phase_deg', v))
+        phase_header = QHBoxLayout()
+        phase_header.addWidget(QLabel("Phase Shift (degrees)"))
+        phase_header.addStretch()
+        phase_header.addWidget(self.phase_spin.vary_checkbox)
+        ap_ctrl_layout.addLayout(phase_header)
         ap_ctrl_layout.addWidget(self.phase_spin)
 
         self.amp_phase_controls.setEnabled(self.amp_phase_enabled)
@@ -326,19 +358,25 @@ class ChannelNoiseTab(QWidget):
         freq_shift_header.addWidget(self.freq_shift_toggle)
         layout.addLayout(freq_shift_header)
 
-        # Freq-shift controls — wrapped so we can grey-out when toggle is off
+        # Freq-shift control: RangeSpinBox inside the grey-out wrapper.  Units are
+        # Hz rather than the MHz this tab used before, matching what the bulk
+        # metadata records so a swept offset is unambiguous.
         self.freq_shift_controls = QWidget()
         fs_ctrl_layout = QVBoxLayout(self.freq_shift_controls)
         fs_ctrl_layout.setContentsMargins(0, 0, 0, 0)
 
-        freq_shift_label = QLabel("Frequency Offset (MHz)")
-        fs_ctrl_layout.addWidget(freq_shift_label)
-        self.freq_shift_spin = QDoubleSpinBox()
-        self.freq_shift_spin.setRange(-100.0, 100.0)
-        self.freq_shift_spin.setSingleStep(0.01)
-        self.freq_shift_spin.setDecimals(4)
-        self.freq_shift_spin.setValue(self.freq_shift_hz / 1e6)
-        self.freq_shift_spin.valueChanged.connect(lambda v: setattr(self, 'freq_shift_hz', v * 1e6))
+        self.freq_shift_spin = RangeSpinBox()
+        freq_shift_header_row = QHBoxLayout()
+        freq_shift_header_row.addWidget(QLabel("Frequency Offset (Hz)"))
+        freq_shift_header_row.addStretch()
+        freq_shift_header_row.addWidget(self.freq_shift_spin.vary_checkbox)
+        fs_ctrl_layout.addLayout(freq_shift_header_row)
+        self.freq_shift_spin.setRange(-100e6, 100e6)
+        self.freq_shift_spin.setSingleStep(1000.0)
+        self.freq_shift_spin.setDecimals(0)
+        self.freq_shift_spin.setSuffix(" Hz")
+        self.freq_shift_spin.setValue(self.freq_shift_hz)
+        self.freq_shift_spin.valueChanged.connect(lambda v: setattr(self, 'freq_shift_hz', v))
         fs_ctrl_layout.addWidget(self.freq_shift_spin)
 
         self.freq_shift_controls.setEnabled(self.freq_shift_enabled)
@@ -347,7 +385,16 @@ class ChannelNoiseTab(QWidget):
         def _on_freq_shift_toggled(checked):
             self.freq_shift_enabled = checked
             self.freq_shift_controls.setEnabled(checked)
+            self.freq_shift_spin.vary_checkbox.setEnabled(checked)
+            if not checked:
+                self.freq_shift_spin.vary_checkbox.setChecked(False)
         self.freq_shift_toggle.toggled.connect(_on_freq_shift_toggled)
+
+        # Sync initial enabled state for vary checkboxes
+        self.snr_spin.vary_checkbox.setEnabled(self.awgn_enabled)
+        self.amplitude_spin.vary_checkbox.setEnabled(self.amp_phase_enabled)
+        self.phase_spin.vary_checkbox.setEnabled(self.amp_phase_enabled)
+        self.freq_shift_spin.vary_checkbox.setEnabled(self.freq_shift_enabled)
 
         return page
 
@@ -377,13 +424,20 @@ class ChannelNoiseTab(QWidget):
             lambda v: setattr(self, 'tdl_profile', v))
         ch_grid.addWidget(self.tdl_profile_combo, 0, 1)
 
-        ch_grid.addWidget(QLabel("Delay Spread (ns)"), 1, 0)
-        self.delay_spread_spin = QDoubleSpinBox()
+        self.delay_spread_spin = RangeSpinBox()
         self.delay_spread_spin.setRange(1.0, 1000.0)
         self.delay_spread_spin.setSingleStep(10.0)
+        self.delay_spread_spin.setDecimals(1)
+        self.delay_spread_spin.setSuffix(" ns")
         self.delay_spread_spin.setValue(self.delay_spread_ns)
         self.delay_spread_spin.valueChanged.connect(
             lambda v: setattr(self, 'delay_spread_ns', v))
+        delay_spread_label_widget = QWidget()
+        delay_spread_label_lay = QHBoxLayout(delay_spread_label_widget)
+        delay_spread_label_lay.setContentsMargins(0, 0, 0, 0)
+        delay_spread_label_lay.addWidget(QLabel("Delay Spread (ns)"))
+        delay_spread_label_lay.addWidget(self.delay_spread_spin.vary_checkbox)
+        ch_grid.addWidget(delay_spread_label_widget, 1, 0)
         ch_grid.addWidget(self.delay_spread_spin, 1, 1)
 
         layout.addLayout(ch_grid)
@@ -395,10 +449,19 @@ class ChannelNoiseTab(QWidget):
         layout.addWidget(sep1)
 
         # --- Noise & Reproducibility ---
-        stoch_snr_layout = self.create_slider_control(
-            "SNR (dB)", self.stoch_snr_db, "dB", -10, 40, "stoch_snr_db"
-        )
-        layout.addLayout(stoch_snr_layout)
+        stoch_snr_header = QHBoxLayout()
+        stoch_snr_header.addWidget(QLabel("SNR (dB)"))
+        stoch_snr_header.addStretch()
+        self.stoch_snr_spin = RangeSpinBox()
+        stoch_snr_header.addWidget(self.stoch_snr_spin.vary_checkbox)
+        layout.addLayout(stoch_snr_header)
+        self.stoch_snr_spin.setRange(-10.0, 40.0)
+        self.stoch_snr_spin.setSingleStep(1.0)
+        self.stoch_snr_spin.setDecimals(1)
+        self.stoch_snr_spin.setSuffix(" dB")
+        self.stoch_snr_spin.setValue(self.stoch_snr_db)
+        self.stoch_snr_spin.valueChanged.connect(lambda v: setattr(self, 'stoch_snr_db', v))
+        layout.addWidget(self.stoch_snr_spin)
 
         seed_row = QHBoxLayout()
         seed_row.addWidget(QLabel("Random Seed"))
@@ -1483,15 +1546,28 @@ class ChannelNoiseTab(QWidget):
             return
 
         if self.active_subtab == 1:
-            # Stochastic TDL path
+            # Stochastic TDL path — sample ranges
             try:
+                rng = np.random.default_rng()
+                sampled_delay = self.delay_spread_spin.value_or_range().sample(rng)
+                sampled_stoch_snr = self.stoch_snr_spin.value_or_range().sample(rng)
+
                 multi_ch = self.stoch_multi_channel_cb.isChecked()
                 config = self._build_stochastic_config()
+                # Override with sampled values
+                config["channel"]["delay_spread_s"] = sampled_delay * 1e-9
+                config["noise"]["snr_db"] = sampled_stoch_snr
                 if multi_ch:
                     config["channel"]["num_tx_ant"] = self.stoch_num_tx_ant_spin.value()
                     config["channel"]["num_rx_ant"] = self.stoch_num_rx_ant_spin.value()
                 block = StochasticTDLAugmentation(config, multi_channel=multi_ch)
                 augmented_signal = block.apply(signal, fs)
+
+                self.last_augmentation_config = {
+                    'delay_spread_ns': self.delay_spread_spin.value_or_range().to_metadata(sampled_delay),
+                    'stoch_snr_db': self.stoch_snr_spin.value_or_range().to_metadata(sampled_stoch_snr),
+                    'stoch_config': config,
+                }
                 if multi_ch and augmented_signal.ndim == 2:
                     self.stoch_output_shape_label.setText(
                         f"Output: {augmented_signal.shape[0]} antennas x {augmented_signal.shape[1]} samples")
@@ -1540,16 +1616,33 @@ class ChannelNoiseTab(QWidget):
                 )
                 return
         else:
-            # AWGN path
+            # AWGN path — sample ranges once per apply
+            rng = np.random.default_rng()
+            sampled_snr = self.snr_spin.value_or_range().sample(rng)
+            sampled_amp = self.amplitude_spin.value_or_range().sample(rng)
+            sampled_phase = self.phase_spin.value_or_range().sample(rng)
+            sampled_freq_hz = self.freq_shift_spin.value_or_range().sample(rng)
+
             pipeline = AugmentationPipeline()
             if self.awgn_enabled:
-                pipeline.add(AWGNAugmentation(snr_db=self.snr_db))
+                pipeline.add(AWGNAugmentation(snr_db=sampled_snr))
             if self.amp_phase_enabled:
-                phase_rad = np.deg2rad(self.phase_deg)
-                pipeline.add(ScalarAmplitudeAndPhaseShift(amplitude=self.amplitude, phi=phase_rad))
+                phase_rad = np.deg2rad(sampled_phase)
+                pipeline.add(ScalarAmplitudeAndPhaseShift(amplitude=sampled_amp, phi=phase_rad))
             if self.freq_shift_enabled:
-                pipeline.add(FrequencyShift(delta_f=self.freq_shift_hz))
+                pipeline.add(FrequencyShift(delta_f=sampled_freq_hz))
             augmented_signal = pipeline.apply(signal, fs)
+
+            # Record range + sampled values for save_augmented_dataset
+            self.last_augmentation_config = {
+                'awgn': {'enabled': self.awgn_enabled,
+                         'snr_db': self.snr_spin.value_or_range().to_metadata(sampled_snr)},
+                'amp_phase': {'enabled': self.amp_phase_enabled,
+                              'amplitude': self.amplitude_spin.value_or_range().to_metadata(sampled_amp),
+                              'phase_deg': self.phase_spin.value_or_range().to_metadata(sampled_phase)},
+                'freq_shift': {'enabled': self.freq_shift_enabled,
+                               'freq_shift_hz': self.freq_shift_spin.value_or_range().to_metadata(sampled_freq_hz)},
+            }
 
         # Get metadata for constellation plot
         metadata = self.clean_metadata
@@ -1615,10 +1708,13 @@ class ChannelNoiseTab(QWidget):
         metadata['source'] = 'augmented'
 
         if self.active_subtab == 1:
-            aug_config = self._build_stochastic_config()
-            aug_config["waveform"]["path"] = f"{aug_name}.npy"
             metadata['augmentation_type'] = 'stochastic_tdl'
-            metadata['augmentation_config'] = aug_config
+            if hasattr(self, 'last_augmentation_config'):
+                metadata['augmentation_config'] = self.last_augmentation_config
+            else:
+                aug_config = self._build_stochastic_config()
+                aug_config["waveform"]["path"] = f"{aug_name}.npy"
+                metadata['augmentation_config'] = aug_config
         elif self.active_subtab == 2:
             aug_config = self._build_rt_config()
             aug_config["transmitters"][0]["waveform_path"] = f"{aug_name}.npy"
@@ -1626,13 +1722,16 @@ class ChannelNoiseTab(QWidget):
             metadata['augmentation_config'] = aug_config
         else:
             metadata['augmentation_type'] = 'awgn'
-            metadata['augmentation_config'] = {
-                'awgn':      {'enabled': self.awgn_enabled, 'snr_db': self.snr_db},
-                'amp_phase': {'enabled': self.amp_phase_enabled,
-                              'amplitude': self.amplitude, 'phase_deg': self.phase_deg},
-                'freq_shift': {'enabled': self.freq_shift_enabled,
-                               'freq_shift_hz': self.freq_shift_hz},
-            }
+            if hasattr(self, 'last_augmentation_config'):
+                metadata['augmentation_config'] = self.last_augmentation_config
+            else:
+                metadata['augmentation_config'] = {
+                    'awgn':      {'enabled': self.awgn_enabled, 'snr_db': self.snr_db},
+                    'amp_phase': {'enabled': self.amp_phase_enabled,
+                                  'amplitude': self.amplitude, 'phase_deg': self.phase_deg},
+                    'freq_shift': {'enabled': self.freq_shift_enabled,
+                                   'freq_shift_hz': self.freq_shift_hz},
+                }
 
         # Determine save mode for multi-channel signals
         signal = self.last_augmented_signal
@@ -1667,3 +1766,120 @@ class ChannelNoiseTab(QWidget):
             self._active_entry = saved
             self.refresh_dataset_list()
             print(f"[ChannelTab] Saved augmented dataset: {aug_name}")
+
+    # ------------------------------------------------------------------
+    # Bulk augmentation
+    # ------------------------------------------------------------------
+
+    def apply_to_all_in_folder(self):
+        """Run the current augmentation config over a user-chosen folder."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Datasets Folder",
+            str(self.dataset_manager.datasets_dir))
+        if not folder:
+            return
+
+        source = DatasetManager(datasets_dir=folder)
+        entries = source.scan()
+        if not entries:
+            QMessageBox.information(self, "Nothing to Process",
+                                    "The selected folder contains no datasets.")
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest_dir = os.path.join(folder, f"augmented_{ts}")
+
+        reply = QMessageBox.question(
+            self, "Bulk Augmentation",
+            f"Apply augmentations to all {len(entries)} datasets?\n\n"
+            f"Output folder:\n{dest_dir}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        dest = DatasetManager(datasets_dir=dest_dir)
+
+        # Build ranges + static config from current widget state
+        ranges: dict[str, ParameterRange] = {}
+        static_config: dict = {}
+        rt_taps = None
+
+        if self.active_subtab == 0:
+            kind = "awgn"
+            ranges["snr_db"] = self.snr_spin.value_or_range()
+            ranges["amplitude"] = self.amplitude_spin.value_or_range()
+            ranges["phase_deg"] = self.phase_spin.value_or_range()
+            ranges["freq_shift_hz"] = self.freq_shift_spin.value_or_range()
+            static_config["awgn_enabled"] = self.awgn_enabled
+            static_config["amp_phase_enabled"] = self.amp_phase_enabled
+            static_config["freq_shift_enabled"] = self.freq_shift_enabled
+
+        elif self.active_subtab == 1:
+            kind = "stoch_tdl"
+            ranges["delay_spread_ns"] = self.delay_spread_spin.value_or_range()
+            ranges["stoch_snr_db"] = self.stoch_snr_spin.value_or_range()
+            static_config["stoch_config"] = self._build_stochastic_config()
+            multi_ch = self.stoch_multi_channel_cb.isChecked()
+            static_config["multi_channel"] = multi_ch
+            if multi_ch:
+                static_config["stoch_config"]["channel"]["num_tx_ant"] = \
+                    self.stoch_num_tx_ant_spin.value()
+                static_config["stoch_config"]["channel"]["num_rx_ant"] = \
+                    self.stoch_num_rx_ant_spin.value()
+
+        elif self.active_subtab == 2:
+            kind = "rt"
+            if self.rt_last_taps is None:
+                QMessageBox.warning(self, "No Taps",
+                                    "Load a scene and compute paths first.")
+                return
+            rt_taps = self.rt_last_taps
+            static_config["rt_config"] = self._build_rt_config()
+            multi_ch = self.rt_multi_channel_cb.isChecked()
+            static_config["multi_channel"] = multi_ch
+        else:
+            return
+
+        self._bulk_thread = BulkAugmentationThread(
+            source_manager=source,
+            dest_manager=dest,
+            augmentation_kind=kind,
+            ranges=ranges,
+            static_config=static_config,
+            rt_taps=rt_taps,
+        )
+
+        # Progress dialog
+        self._bulk_progress = QProgressDialog(
+            "Augmenting datasets…", "Cancel", 0, len(entries), self)
+        self._bulk_progress.setWindowTitle("Bulk Augmentation")
+        self._bulk_progress.setMinimumDuration(0)
+        self._bulk_progress.setModal(True)
+
+        self._bulk_progress.canceled.connect(self._bulk_thread.request_cancel)
+        self._bulk_thread.progress.connect(self._on_bulk_progress)
+        self._bulk_thread.finished.connect(self._on_bulk_finished)
+        self._bulk_thread.error.connect(self._on_bulk_error)
+
+        self._bulk_thread.start()
+
+    def _on_bulk_progress(self, current: int, total: int, name: str):
+        self._bulk_progress.setMaximum(total)
+        self._bulk_progress.setValue(current)
+        self._bulk_progress.setLabelText(f"Processing {current}/{total}: {name}")
+
+    def _on_bulk_finished(self, ok: int, errors: int, dest_dir: str):
+        self._bulk_progress.close()
+        QMessageBox.information(
+            self, "Bulk Augmentation Complete",
+            f"Processed: {ok + errors}\n"
+            f"Succeeded: {ok}\n"
+            f"Errors: {errors}\n\n"
+            f"Output: {dest_dir}",
+        )
+        self.refresh_dataset_list()
+
+    def _on_bulk_error(self, msg: str):
+        self._bulk_progress.close()
+        QMessageBox.critical(self, "Bulk Augmentation Error", msg)
