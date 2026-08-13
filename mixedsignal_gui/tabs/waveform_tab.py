@@ -143,10 +143,15 @@ class BatchGenerationConfigDialog(QDialog):
             'LFM':    {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
             'Barker': {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 5e-5},
             'FMCW':   {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
-            'WiFi':   {'fs_override': 30.72e6, 'fc_override': 10e6},
-            'LTE':    {'fs_override': 30.72e6, 'fc_override': 10e6},
-            '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 10e6},
-            'Zigbee': {'fs_override': 30.72e6, 'fc_override': 10e6},
+            # 3.5 GHz carrier: fc does not change a baseband waveform, but it is
+            # stored in the dataset metadata and becomes the Sionna RT scene
+            # frequency (and the TDL carrier) during augmentation, so it must be
+            # a band where ray tracing is physically meaningful.  3.5 GHz is the
+            # default the bundled HCRO scene carries in sionna_widget/scenes.py.
+            'WiFi':   {'fs_override': 30.72e6, 'fc_override': 3.5e9},
+            'LTE':    {'fs_override': 30.72e6, 'fc_override': 3.5e9},
+            '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 3.5e9},
+            'Zigbee': {'fs_override': 30.72e6, 'fc_override': 3.5e9},
         }
 
         # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
@@ -367,7 +372,12 @@ class WaveformSelectionTab(QWidget):
         # fc
         layout.addWidget(QLabel("Carrier Frequency fc (MHz)"))
         self.fc_spin = QDoubleSpinBox()
-        self.fc_spin.setRange(0.1, 200)
+        # Up to 100 GHz.  fc is recorded in the dataset metadata and is what the
+        # Channel tab feeds to Sionna RT (scene frequency) and to the TDL model
+        # (Doppler/carrier term), so it has to reach the GHz bands where ray
+        # tracing is meaningful and Sionna's ITU materials are characterised.
+        # The old 200 MHz ceiling made those bands unreachable.
+        self.fc_spin.setRange(0.1, 100_000)
         self.fc_spin.setValue(self.fc / 1e6)  # Convert to MHz for display
         self.fc_spin.valueChanged.connect(lambda v: setattr(self, "fc", v * 1e6))  # Convert back to Hz
         layout.addWidget(self.fc_spin)

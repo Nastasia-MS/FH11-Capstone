@@ -157,10 +157,12 @@ class EvaluateModelTab(QWidget):
         self.fs_spin.valueChanged.connect(lambda v: setattr(self, "fs", v * 1e6))
         layout.addWidget(self.fs_spin)
 
-        # fc — display in MHz, store in Hz
+        # fc — display in MHz, store in Hz.  Ceiling matches the Waveform tab
+        # (100 GHz) so a model trained on GHz-band datasets can be exercised at
+        # the same carrier here.
         layout.addWidget(QLabel("Carrier Frequency fc (MHz)"))
         self.fc_spin = QDoubleSpinBox()
-        self.fc_spin.setRange(0.1, 200)
+        self.fc_spin.setRange(0.1, 100_000)
         self.fc_spin.setValue(self.fc / 1e6)
         self.fc_spin.valueChanged.connect(lambda v: setattr(self, "fc", v * 1e6))
         layout.addWidget(self.fc_spin)
