@@ -529,11 +529,14 @@ class MLTrainingTab(QWidget):
             return
 
         entries = self.dataset_manager.scan()
-        # Only use non-augmented entries that have an explicit modulation field
-        base_entries = [
-            e for e in entries
-            if not e.get('augmented', False) and e.get('modulation')
-        ]
+        # Any entry carrying a modulation label is usable, augmented or not.
+        # This used to require `not augmented`, which made the whole channel
+        # workflow untrainable: a bulk augmentation run writes 900 files that all
+        # carry augmented=True, so the registry reported "no datasets" for exactly
+        # the folder the user had just produced.  Augmented examples are the point
+        # of the channel tab -- they keep the modulation field of the waveform they
+        # came from, which is the class label.
+        base_entries = [e for e in entries if e.get('modulation')]
 
         if not base_entries:
             self.status_label.setText("No datasets with modulation metadata found \u2013 generate some first.")
