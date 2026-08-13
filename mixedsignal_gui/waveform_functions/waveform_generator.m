@@ -571,11 +571,10 @@ function sig = generate_lte_signal(output_len, fs, fc, output_type)
             sig_bb = sig_bb_native(:,1);
         end
 
-        % Repeat to fill output_len
-        while length(sig_bb) < output_len
-            sig_bb = [sig_bb; sig_bb]; %#ok<AGROW>
-        end
-        sig_bb = sig_bb(1:output_len);
+        % Fit to output_len, clipping at a random offset when the frame is
+        % longer (see tile_or_clip_random: a fixed offset lands in the
+        % deterministic preamble and makes every call identical).
+        sig_bb = tile_or_clip_random(sig_bb, output_len);
 
         if strcmpi(output_type, 'baseband')
             sig = complex(sig_bb);
@@ -618,11 +617,10 @@ function sig = generate_5gnr_signal(output_len, fs, fc, output_type)
             sig_bb = sig_bb_native(:,1);
         end
 
-        % Repeat to fill output_len
-        while length(sig_bb) < output_len
-            sig_bb = [sig_bb; sig_bb]; %#ok<AGROW>
-        end
-        sig_bb = sig_bb(1:output_len);
+        % Fit to output_len, clipping at a random offset when the frame is
+        % longer (see tile_or_clip_random: a fixed offset lands in the
+        % deterministic preamble and makes every call identical).
+        sig_bb = tile_or_clip_random(sig_bb, output_len);
 
         if strcmpi(output_type, 'baseband')
             sig = complex(sig_bb);
@@ -663,11 +661,10 @@ function sig = generate_zigbee_signal(output_len, fs, fc, output_type)
             sig_bb = sig_bb_native(:,1);
         end
 
-        % Repeat to fill output_len
-        while length(sig_bb) < output_len
-            sig_bb = [sig_bb; sig_bb]; %#ok<AGROW>
-        end
-        sig_bb = sig_bb(1:output_len);
+        % Fit to output_len, clipping at a random offset when the frame is
+        % longer (see tile_or_clip_random: a fixed offset lands in the
+        % deterministic preamble and makes every call identical).
+        sig_bb = tile_or_clip_random(sig_bb, output_len);
 
         if strcmpi(output_type, 'baseband')
             sig = complex(sig_bb);
@@ -677,6 +674,31 @@ function sig = generate_zigbee_signal(output_len, fs, fc, output_type)
     catch ME
         error('Zigbee generation failed (need Communications Toolbox): %s', ...
               ME.message);
+    end
+end
+
+
+function sig_bb = tile_or_clip_random(sig_bb, output_len)
+    % TILE_OR_CLIP_RANDOM - fit a generated frame to output_len.
+    %
+    % Repeats the frame when it is shorter than requested, and otherwise takes a
+    % clip at a RANDOM offset rather than always from sample 1.
+    %
+    % The fixed offset was a silent trap.  Standards frames begin with the same
+    % deterministic preamble/sync/reference symbols every time, so clipping from
+    % the start produced byte-identical output across calls even when the payload
+    % bits were randomised: measured over 60 generated files, 5G NR and Zigbee
+    % were 100% correlated to each other while only LoRa (which already took a
+    % random offset) varied.  A classifier trained on that is memorising one
+    % waveform per class, not learning the modulation.
+    if numel(sig_bb) > output_len
+        off = randi([0, numel(sig_bb) - output_len]);
+        sig_bb = sig_bb(off + (1:output_len));
+    else
+        while numel(sig_bb) < output_len
+            sig_bb = [sig_bb; sig_bb]; %#ok<AGROW>
+        end
+        sig_bb = sig_bb(1:output_len);
     end
 end
 
