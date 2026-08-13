@@ -701,9 +701,14 @@ class WaveformSelectionTab(QWidget):
 
     
     def batch_generate(self):
-        """Generate datasets with automatic train/test split (75%/25% ratio)."""
-        import random
+        """Generate labelled datasets for every enabled modulation.
 
+        Files land in the shared dataset folder as ``<Mod>_<M>_<timestamp>``
+        pairs and accumulate across runs; nothing is overwritten.  Class
+        membership comes from the ``modulation`` metadata field, so no
+        train/test partition is imposed here -- keep a hold-out set in its own
+        folder and load it through the Inference tab.
+        """
         # Show configuration dialog
         global_params = {
             'fs': self.fs,
@@ -736,13 +741,15 @@ class WaveformSelectionTab(QWidget):
                 num_samples = batch_config[modulation]['num_samples']
                 total += num_samples * len(batch_config[modulation]['M_values'])
 
-        # Train/test split ratio: 0.25 means 75% train, 25% test
-        test_ratio = 0.25
-        
-        count_train = 0
-        count_test = 0
+        # No train/test split is assigned here.  It used to tag every file
+        # train/test 75/25 and prefix the filename, but nothing consumed either
+        # signal: load_from_registry groups purely by modulation and TrainerThread
+        # takes its own independent random val_split, so the "test" files were
+        # trained on regardless.  Reporting a split that does not hold is worse
+        # than reporting none, so hold-out sets are now kept as separate folders.
+        count_saved = 0
         failures = {}          # modulation -> first error seen
-        print(f"Starting batch generation with train/test split (75%/25%): {total} total samples")
+        print(f"Starting batch generation: {total} total samples")
 
         for modulation in modulations:
             if not batch_config[modulation]['enabled']:
@@ -774,17 +781,11 @@ class WaveformSelectionTab(QWidget):
                         )
                         data = result["signal"]
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                        
-                        # Determine if this sample goes to train or test set
-                        is_test = random.random() < test_ratio
-                        split_prefix = "test" if is_test else "train"
-                        
-                        # Create dataset name with split prefix
-                        name = f"{split_prefix}_{modulation}_{M}_{timestamp}"
+
+                        name = f"{modulation}_{M}_{timestamp}"
 
                         metadata = {
                             "source":      "batch_generated",
-                            "data_split":  "test" if is_test else "train",
                             "modulation":  modulation,
                             "M":           int(M),
                             "fc":          fc,
@@ -800,15 +801,10 @@ class WaveformSelectionTab(QWidget):
                         }
 
                         self.dataset_manager.save(name, data, metadata)
-                        
-                        if is_test:
-                            count_test += 1
-                        else:
-                            count_train += 1
-                        
-                        total_saved = count_train + count_test
-                        if total_saved % 10 == 0:
-                            print(f"  Progress: {total_saved}/{total} (train: {count_train}, test: {count_test})")
+
+                        count_saved += 1
+                        if count_saved % 10 == 0:
+                            print(f"  Progress: {count_saved}/{total}")
 
                     except Exception as e:
                         print(f"X Error generating {modulation} M={M}: {e}")
@@ -816,16 +812,13 @@ class WaveformSelectionTab(QWidget):
                         # a failing class usually fails identically every sample.
                         failures.setdefault(modulation, str(e))
 
-        total_saved = count_train + count_test
+        total_saved = count_saved
         print(f"Batch complete: {total_saved}/{total} datasets saved")
-        print(f"  Training set: {count_train} samples")
-        print(f"  Test set: {count_test} samples")
 
         # Report in the GUI too.  Previously the only sign that a class had
         # failed was a line on stdout, so a run that quietly dropped WiFi/LTE/
         # 5G_NR looked like a complete success.
-        summary = (f"Saved {total_saved} of {total} samples.\n"
-                   f"Training set: {count_train}    Test set: {count_test}")
+        summary = f"Saved {total_saved} of {total} samples."
         if failures:
             detail = "\n".join(f"\n• {mod}\n    {reason}" for mod, reason in failures.items())
             QMessageBox.warning(
@@ -874,7 +867,8 @@ class WaveformSelectionTab(QWidget):
                     )
                     data = result["signal"]
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                    # Use "test_" prefix for easy identification
+                    # "test_" here marks a throwaway quick-test file, not a
+                    # train/test partition; _infer_label strips the prefix.
                     name = f"test_{modulation}_{M}_{timestamp}"
                     
                     metadata = {

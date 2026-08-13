@@ -495,15 +495,27 @@ class InferenceResultsTab(QWidget):
 
     @staticmethod
     def _infer_label(path: str) -> str:
-        """Guess modulation label from filename or parent folder."""
+        """Guess modulation label from filename or parent folder.
+
+        Generated names look like ``<Mod>_<M>_<YYYYmmdd>_<HHMMSS>_<micros>``,
+        optionally with a legacy ``test_``/``train_`` prefix.  The label is
+        everything before the trailing ``<M>_<date>_<time>_<micros>`` block, not
+        just the first underscore-separated token: class names legitimately
+        contain underscores (``5G_NR``), and taking one token turned that into
+        ``5G``, which then failed to match the model's own class labels.
+        """
         stem = os.path.splitext(os.path.basename(path))[0]
         parts = stem.split("_")
-        # test_QAM_16_..., train_PSK_4_...
-        if len(parts) >= 2 and parts[0].lower() in ("test", "train"):
-            return parts[1]
-        if parts:
-            return parts[0]
-        return os.path.basename(os.path.dirname(path))
+
+        if parts and parts[0].lower() in ("test", "train"):
+            parts = parts[1:]
+        if not parts:
+            return os.path.basename(os.path.dirname(path))
+
+        # Strip the trailing numeric/timestamp fields, keeping the name tokens.
+        while len(parts) > 1 and parts[-1].isdigit():
+            parts.pop()
+        return "_".join(parts) if parts else os.path.basename(os.path.dirname(path))
 
     @staticmethod
     def _load_array(path: str):
