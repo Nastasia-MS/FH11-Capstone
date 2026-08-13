@@ -134,6 +134,12 @@ function [sig, symbols_out] = waveform_generator(output_len, fs, Tsymb, fc, M, m
         return;
     end
 
+    if strcmpi(modulation, 'Zigbee')
+        sig = generate_zigbee_signal(output_len, fs, fc, output_type);
+        symbols_out = [];
+        return;
+    end
+
     %% Generate symbols based on modulation type
     symbols = generate_symbols(num_symbols, M, modulation);
     symbols_out = symbols(:);
@@ -542,9 +548,13 @@ function sig = generate_lte_signal(output_len, fs, fc, output_type)
     % GENERATE_LTE_SIGNAL - LTE downlink reference measurement channel
     % Requires: LTE Toolbox
     try
-        % R.0 = 1.4MHz BW, QPSK, 1 antenna
-        bits = randi([0 1], 2000, 1);
-        [sig_bb_native, ~, rmccfg] = lteRMCDLTool('R.0', bits);
+        % R.9 = 20 MHz BW, 100 resource blocks, 64-QAM, 1 antenna.  Its native
+        % sampling rate is exactly 30.72 Msps, so the resample below is a no-op
+        % at that rate.  R.0 (1.4 MHz) was used previously; at 30.72 Msps it
+        % occupies only ~8% of the band, whereas real 20 MHz LTE/OFDM captures
+        % occupy ~60%.
+        bits = randi([0 1], 20000, 1);
+        [sig_bb_native, ~, rmccfg] = lteRMCDLTool('R.9', bits);
         native_fs = rmccfg.SamplingRate;
 
         % Resample to target fs
@@ -576,9 +586,20 @@ function sig = generate_5gnr_signal(output_len, fs, fc, output_type)
     % GENERATE_5GNR_SIGNAL - 5G NR downlink waveform
     % Requires: 5G Toolbox
     try
+        % 20 MHz FR1 carrier at 15 kHz SCS = 106 resource blocks, whose native
+        % sampling rate is exactly 30.72 Msps (so the resample below is a no-op
+        % at that rate).  Setting ChannelBandwidth alone is NOT sufficient: the
+        % grid and bandwidth part keep their 52-RB (10 MHz) defaults, and the
+        % PRBSet below would then exceed the BWP size and error out.  All three
+        % must be widened together.
         cfg = nrDLCarrierConfig;
-        cfg.ChannelBandwidth = 10;          % 10 MHz (smallest FR1)
+        cfg.ChannelBandwidth = 20;          % 20 MHz FR1
         cfg.NumSubframes = 10;              % 10 ms frame
+        cfg.SCSCarriers{1}.NSizeGrid = 106;
+        cfg.BandwidthParts{1}.NSizeBWP = 106;
+        pdsch = cfg.PDSCH{1};
+        pdsch.PRBSet = 0:105;               % fill the carrier
+        cfg.PDSCH{1} = pdsch;
 
         [sig_bb_native, info] = nrWaveformGenerator(cfg);
         native_fs = info.ResourceGrids(1).Info.SampleRate;
@@ -604,6 +625,52 @@ function sig = generate_5gnr_signal(output_len, fs, fc, output_type)
         end
     catch ME
         error('5G NR generation failed (need 5G Toolbox): %s', ME.message);
+    end
+end
+
+
+function sig = generate_zigbee_signal(output_len, fs, fc, output_type)
+    % GENERATE_ZIGBEE_SIGNAL - IEEE 802.15.4 O-QPSK PHY (Zigbee)
+    % Requires: Communications Toolbox (lrwpan package)
+    %
+    % The 2450 MHz O-QPSK PHY spreads each symbol to 2 Mchip/s with a
+    % half-sine pulse, so the waveform occupies roughly 3 MHz regardless of
+    % SamplesPerChip -- that is the standard's own bandwidth, not a tunable
+    % parameter.  SamplesPerChip only sets the native rate we resample from.
+    try
+        samples_per_chip = 8;               % native 16 Msps at 2 Mchip/s
+        cfg = lrwpanOQPSKConfig('Band', 2450, ...
+                                'SamplesPerChip', samples_per_chip);
+
+        % lrwpanWaveformGenerator requires DATA as a column vector whose
+        % length is a multiple of 8 (whole PSDU octets).
+        psdu_octets = 127;                  % max PSDU for this PHY
+        bits = randi([0 1], psdu_octets * 8, 1);
+        sig_bb_native = lrwpanWaveformGenerator(bits, cfg);
+        native_fs = 2e6 * samples_per_chip;
+
+        % Resample to target fs
+        if abs(fs - native_fs) > 1
+            [P, Q] = rat(fs / native_fs, 1e-6);
+            sig_bb = resample(sig_bb_native(:,1), P, Q);
+        else
+            sig_bb = sig_bb_native(:,1);
+        end
+
+        % Repeat to fill output_len
+        while length(sig_bb) < output_len
+            sig_bb = [sig_bb; sig_bb]; %#ok<AGROW>
+        end
+        sig_bb = sig_bb(1:output_len);
+
+        if strcmpi(output_type, 'baseband')
+            sig = complex(sig_bb);
+        else
+            sig = upconvert_to_passband(sig_bb, fs, fc, output_len);
+        end
+    catch ME
+        error('Zigbee generation failed (need Communications Toolbox): %s', ...
+              ME.message);
     end
 end
 

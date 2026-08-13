@@ -84,9 +84,10 @@ _BARKER_CODES = {
 #: scores well on our own synthetic data and fails on real captures, so they
 #: are refused outright rather than approximated.
 MATLAB_ONLY_MODULATIONS = {
-    "WiFi":  "WLAN Toolbox (802.11ax HE-SU)",
-    "LTE":   "LTE Toolbox (downlink RMC)",
-    "5G_NR": "5G Toolbox (NR downlink)",
+    "WiFi":   "WLAN Toolbox (802.11ax HE-SU)",
+    "LTE":    "LTE Toolbox (downlink RMC R.9, 20 MHz)",
+    "5G_NR":  "5G Toolbox (NR downlink, 20 MHz FR1)",
+    "Zigbee": "Communications Toolbox (IEEE 802.15.4 O-QPSK)",
 }
 
 

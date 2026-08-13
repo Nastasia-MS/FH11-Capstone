@@ -24,7 +24,7 @@ class QuickTestDataDialog(QDialog):
         
         self.modulations_available = ["PAM", "QAM", "PSK", "FSK", "FHSS",
                                       "LFM", "Barker", "FMCW",
-                                      "WiFi", "LTE", "5G_NR"]
+                                      "WiFi", "LTE", "5G_NR", "Zigbee"]
         self.selected_modulations = set(self.modulations_available)  # All selected by default
 
         # M values for minimal test: just 1-2 M values per modulation
@@ -40,8 +40,9 @@ class QuickTestDataDialog(QDialog):
             "WiFi":   [4],
             "LTE":    [4],
             "5G_NR":  [4],
+            "Zigbee": [4],
         }
-        
+
         self.setup_ui()
         install_wheel_blocker(self)
     
@@ -114,7 +115,8 @@ class BatchGenerationConfigDialog(QDialog):
         
         self.global_params = global_params
         self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS",
-                            "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR"]
+                            "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR",
+                            "Zigbee"]
 
         # Default M values for each modulation
         self.default_m_values = {
@@ -129,16 +131,22 @@ class BatchGenerationConfigDialog(QDialog):
             "WiFi":   [4],
             "LTE":    [4],
             "5G_NR":  [4],
+            "Zigbee": [4],
         }
-        
-        # Sensible defaults for waveforms that need higher fs / different fc
+
+        # Sensible defaults for waveforms that need higher fs / different fc.
+        # The standards rows default to 30.72 Msps: LTE R.9 and the 20 MHz NR
+        # carrier are natively 30.72 Msps, so no resampling happens there, and
+        # keeping every standards class on one rate makes their occupied
+        # bandwidths directly comparable.
         self._waveform_defaults = {
             'LFM':    {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
             'Barker': {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 5e-5},
             'FMCW':   {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
-            'WiFi':   {'fs_override': 40e6, 'fc_override': 10e6},
-            'LTE':    {'fs_override': 3.84e6, 'fc_override': 1e6},
+            'WiFi':   {'fs_override': 30.72e6, 'fc_override': 10e6},
+            'LTE':    {'fs_override': 30.72e6, 'fc_override': 10e6},
             '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 10e6},
+            'Zigbee': {'fs_override': 30.72e6, 'fc_override': 10e6},
         }
 
         # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
@@ -343,7 +351,7 @@ class WaveformSelectionTab(QWidget):
         self.waveform_combo = QComboBox()
         self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
                                           "LFM", "Barker", "FMCW",
-                                          "WiFi", "LTE", "5G_NR"])
+                                          "WiFi", "LTE", "5G_NR", "Zigbee"])
         mark_unavailable_modulations(self.waveform_combo, self.matlab)
         layout.addWidget(self.waveform_combo)
 

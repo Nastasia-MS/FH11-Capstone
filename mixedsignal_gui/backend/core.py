@@ -36,7 +36,8 @@ class WaveformConfig:
         self._validate()
 
     # Modulations that bypass pulse shaping and don't return symbols
-    _NO_SYMBOL_MODS = {"FSK", "FHSS", "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR"}
+    _NO_SYMBOL_MODS = {"FSK", "FHSS", "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR",
+                       "Zigbee"}
 
     def _validate(self):
         sps = self.fs * self.Tsymb
@@ -65,7 +66,7 @@ class WaveformConfig:
             # M maps to nearest valid Barker length (2,3,4,5,7,11,13)
             if self.M < 2:
                 raise ValueError("Barker requires M >= 2")
-        elif self.modulation in ("WiFi", "LTE", "5G_NR"):
+        elif self.modulation in ("WiFi", "LTE", "5G_NR", "Zigbee"):
             # Standards waveforms — M is unused by the MATLAB generator
             pass
         else:

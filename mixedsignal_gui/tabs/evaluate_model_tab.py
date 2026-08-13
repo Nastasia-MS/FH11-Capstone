@@ -143,7 +143,7 @@ class EvaluateModelTab(QWidget):
         self.waveform_combo = QComboBox()
         self.waveform_combo.addItems(["PAM", "QAM", "PSK", "FSK", "FHSS",
                                           "LFM", "Barker", "FMCW",
-                                          "WiFi", "LTE", "5G_NR"])
+                                          "WiFi", "LTE", "5G_NR", "Zigbee"])
         mark_unavailable_modulations(self.waveform_combo, self.eng)
         self.waveform_combo.currentTextChanged.connect(self._on_waveform_changed)
         layout.addWidget(self.waveform_combo)
@@ -598,9 +598,14 @@ class EvaluateModelTab(QWidget):
         'LFM':    {'fs': 1e6, 'fc': 200e3, 'Tsymb': 1e-4, 'M': 4},
         'Barker': {'fs': 1e6, 'fc': 200e3, 'Tsymb': 5e-5, 'M': 7},
         'FMCW':   {'fs': 1e6, 'fc': 200e3, 'Tsymb': 1e-4, 'M': 4},
-        'WiFi':   {'fs': 1e6, 'fc': 250e3, 'M': 4},
-        'LTE':    {'fs': 1e6, 'fc': 250e3, 'M': 4},
-        '5G_NR':  {'fs': 1e6, 'fc': 250e3, 'M': 4},
+        # Standards waveforms are generated at their native 30.72 Msps so the
+        # occupied bandwidth matches what the Waveform tab produces; evaluating
+        # a model at 1 MHz against 30.72 Msps training data would resample the
+        # signal into a different fraction of the band.
+        'WiFi':   {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
+        'LTE':    {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
+        '5G_NR':  {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
+        'Zigbee': {'fs': 30.72e6, 'fc': 10e6, 'M': 4},
     }
 
     def _on_waveform_changed(self, modulation):
