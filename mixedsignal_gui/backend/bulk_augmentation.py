@@ -24,6 +24,7 @@ from mixedsignal_gui.backend.augmentation import (
     ScalarAmplitudeAndPhaseShift,
     StochasticTDLAugmentation,
     SionnaRTAugmentation,
+    MeasuredChannelAugmentation,
 )
 from mixedsignal_gui.backend.parameter_range import ParameterRange
 
@@ -39,11 +40,12 @@ class BulkAugmentationThread(QThread):
         self,
         source_manager,
         dest_manager,
-        augmentation_kind: str,          # "awgn" | "stoch_tdl" | "rt"
+        augmentation_kind: str,          # "awgn" | "stoch_tdl" | "rt" | "measured"
         ranges: dict[str, ParameterRange],
         static_config: dict,
         rt_taps: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
+        measured_channels: Optional[list] = None,
     ) -> None:
         super().__init__()
         self._source = source_manager
@@ -52,6 +54,9 @@ class BulkAugmentationThread(QThread):
         self._ranges = dict(ranges)
         self._static = dict(static_config)
         self._rt_taps = rt_taps
+        self._measured_channels = list(measured_channels) if measured_channels else []
+        self._last_channel_name = None
+        self._last_channel_index = None
         self._seed = seed if seed is not None else int(datetime.now().timestamp())
         self._cancel = False
 
@@ -125,6 +130,14 @@ class BulkAugmentationThread(QThread):
                     meta["selected_antenna"] = ant_idx
                     meta["total_antennas"] = int(augmented.shape[0])
 
+                # Which measured channel this file was convolved with.  Without
+                # it a bank-sampled run is unauditable: every output looks alike
+                # in metadata even though each used a different CIR.
+                if self._kind == "measured" and self._last_channel_index is not None:
+                    meta["measured_channel_index"] = self._last_channel_index
+                    meta["measured_channel_name"] = self._last_channel_name
+                    meta["measured_bank_size"] = len(self._measured_channels)
+
                 out_name = self._dest._unique_name(f"{name}_aug")
                 self._dest.save(out_name, augmented_save, meta)
                 ok_count += 1
@@ -176,6 +189,36 @@ class BulkAugmentationThread(QThread):
             multi_ch = self._static.get("multi_channel", False)
             block = SionnaRTAugmentation(config, self._rt_taps,
                                          multi_channel=multi_ch)
+            return block.apply(signal, fs)
+
+        elif self._kind == "measured":
+            # Draw a channel per file when the bank holds more than one and the
+            # caller asked to randomise.  The index comes from this entry's own
+            # generator, so a run over N files uses N independently drawn
+            # channels and still reproduces exactly from the master seed --
+            # unlike np.random, which the interactive path uses because it only
+            # ever augments one file at a time.
+            channels = self._measured_channels or []
+            if not channels:
+                raise ValueError("measured augmentation requires a non-empty channel bank")
+
+            if self._static.get("random_channel", True) and len(channels) > 1:
+                idx = int(rng.integers(0, len(channels)))
+            else:
+                idx = int(self._static.get("channel_index", 0))
+                idx = max(0, min(idx, len(channels) - 1))
+
+            channel = channels[idx]
+            self._last_channel_name = getattr(channel, "name", str(idx))
+            self._last_channel_index = idx
+
+            snr = sampled.get("meas_snr_db") if self._static.get("meas_awgn_enabled") else None
+            block = MeasuredChannelAugmentation(
+                channel,
+                normalize=self._static.get("normalize", True),
+                snr_db=snr,
+                seed=int(rng.integers(0, 2**31)),
+            )
             return block.apply(signal, fs)
 
         else:
