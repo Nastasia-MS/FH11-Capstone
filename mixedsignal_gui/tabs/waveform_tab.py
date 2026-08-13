@@ -163,6 +163,7 @@ class BatchGenerationConfigDialog(QDialog):
         }
 
         # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
+        default_num_samples = int(global_params.get('num_samples', 10) or 10)
         self.config = {}
         for mod in self.modulations:
             wf_defaults = self._waveform_defaults.get(mod, {})
@@ -172,7 +173,7 @@ class BatchGenerationConfigDialog(QDialog):
                 'fs_override': wf_defaults.get('fs_override', None),
                 'fc_override': wf_defaults.get('fc_override', None),
                 'Tsymb_override': wf_defaults.get('Tsymb_override', None),
-                'num_samples': 10,
+                'num_samples': default_num_samples,
             }
         
         self.setup_ui()
@@ -241,8 +242,10 @@ class BatchGenerationConfigDialog(QDialog):
         # Num samples
         layout.addWidget(QLabel("Samples per M value:"), row, 0)
         samples_spin = QSpinBox()
-        samples_spin.setRange(1, 100)
-        samples_spin.setValue(10)
+        # Training sets routinely want hundreds of examples per class; the old
+        # 100 ceiling silently clamped larger requests.
+        samples_spin.setRange(1, 100_000)
+        samples_spin.setValue(self.config[modulation]['num_samples'])
         samples_spin.valueChanged.connect(lambda v: self._update_config(modulation, 'num_samples', v))
         layout.addWidget(samples_spin, row, 1)
         
@@ -491,7 +494,7 @@ class WaveformSelectionTab(QWidget):
         batch_layout = QHBoxLayout()
         batch_layout.addWidget(QLabel("Samples per modulation:"))
         self.batch_samples_spin = QSpinBox()
-        self.batch_samples_spin.setRange(1, 1000)
+        self.batch_samples_spin.setRange(1, 100_000)
         self.batch_samples_spin.setValue(10)
         batch_layout.addWidget(self.batch_samples_spin)
         layout.addLayout(batch_layout)
@@ -710,8 +713,12 @@ class WaveformSelectionTab(QWidget):
             'alpha': self.alpha,
             'span': self.span,
             'pulse_shape': self.pulse_shape_combo.currentText(),
+            # Seeds every row's "Samples per M value" in the dialog.  This spin
+            # box used to be created, shown, and never read, so setting it had
+            # no effect and the dialog silently used its own default of 10.
+            'num_samples': self.batch_samples_spin.value(),
         }
-        
+
         dialog = BatchGenerationConfigDialog(global_params, self)
         if dialog.exec() != QDialog.Accepted:
             return  # User cancelled
