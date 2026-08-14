@@ -1564,7 +1564,10 @@ class ChannelNoiseTab(QWidget):
 
         sps = None
         if Tsymb is not None:
-            sps = int(fs * Tsymb)
+            # round(), not int() — see update_waveform_plots(): truncation
+            # turns a 0.9999999999999999 product into sps=0, which the
+            # constellation path cannot slice with.
+            sps = max(1, int(round(fs * Tsymb)))
 
         # Choose the correct comparison widget
         if self.active_subtab == 2:

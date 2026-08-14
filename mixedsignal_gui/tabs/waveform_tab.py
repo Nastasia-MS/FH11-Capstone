@@ -534,7 +534,11 @@ class WaveformSelectionTab(QWidget):
 
         data = self.current_data
         fs = self.current_fs
-        sps = int(fs * self.Tsymb)
+        # round(), not int(): fs * Tsymb routinely lands just below a whole
+        # number (the UI's own 0.10 MHz at 10 us gives 0.9999999999999999),
+        # which int() truncates to 0.  demodulate_to_symbols then slices with
+        # sps as a step, and a zero step raises.  Matches WaveformConfig.sps.
+        sps = max(1, int(round(fs * self.Tsymb)))
 
         t = np.arange(len(data)) / fs * 1e6
 
