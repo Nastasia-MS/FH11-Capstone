@@ -22,6 +22,19 @@ class MATLABWaveformGenerator:
 
         from mixedsignal_gui.backend.core import WaveformConfig
 
+        # waveform_generator.m does sps = round(fs*Tsymb) and hands it to
+        # upfirdn, whose factors must be positive integers.  A fractional value
+        # would be silently rounded there, giving a different symbol rate than
+        # asked for, so refuse rather than mislead.  The Python generator
+        # resamples rationally and has no such limit.
+        if getattr(cfg, "is_fractional_sps", False):
+            raise RuntimeError(
+                f"fs x Tsymb = {cfg.sps_exact:g} samples per symbol is not a whole "
+                f"number, and MATLAB's upfirdn requires integer resampling "
+                f"factors. Adjust fs or Tsymb, or use the built-in Python "
+                f"generator, which handles fractional rates by rational "
+                f"resampling.")
+
         eng = self.matlab_engine.eng
         self.last_metadata = {"generator": "matlab"}
 
@@ -335,20 +348,28 @@ class PythonWaveformGenerator:
         # -- linear modulations: symbols -> pulse shaping -> trim ---------
         from scipy.signal import upfirdn
 
+        # Upsample by p and decimate by q so a fractional samples-per-symbol
+        # (LTE's 3.84, say) is realised exactly.  For a whole number q is 1 and
+        # p is sps, which reduces to the plain integer path.
+        p, q = cfg.sps_ratio
+
         if cfg.pulse_shape == "rrc":
-            h = rcosdesign(cfg.alpha, cfg.span, sps)
-            filter_delay = cfg.span * sps // 2
+            # Design at the upsampled rate p, then decimation by q lands the
+            # taps at the true symbol spacing.
+            h = rcosdesign(cfg.alpha, cfg.span, p)
+            filter_delay = int(round(cfg.span * p / 2 / q))
         else:
-            h = np.ones(sps) / np.sqrt(sps)
+            h = np.ones(p) / np.sqrt(p)
             filter_delay = 0
 
-        num_symbols = int(np.ceil((output_len + 2 * filter_delay) / sps))
+        sps_exact = cfg.sps_exact
+        num_symbols = int(np.ceil((output_len + 2 * filter_delay) / sps_exact))
         symbols = self._symbols(num_symbols, cfg.M, modulation)
         self.last_metadata["baseband_symbols"] = symbols
 
         # NOTE argument order: SciPy is upfirdn(h, x, up, down); MATLAB is
         # upfirdn(x, h, p, q).  Swapping these fails silently.
-        sig_bb = upfirdn(h, symbols, up=sps, down=1)
+        sig_bb = upfirdn(h, symbols, up=p, down=q)
 
         # Trim off the filter's group delay, zero-padding if the filtered
         # signal is short (mirrors `sig_bb(end_idx) = 0` in the .m).

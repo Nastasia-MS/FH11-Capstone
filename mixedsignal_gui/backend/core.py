@@ -40,8 +40,15 @@ class WaveformConfig:
 
     def _validate(self):
         sps = self.fs * self.Tsymb
-        if abs(sps - round(sps)) > 1e-9:
-            raise ValueError("fs * Tsymb must be an integer")
+        if sps <= 0:
+            raise ValueError("fs * Tsymb must be positive")
+        # A non-integer samples-per-symbol used to be rejected outright, which
+        # ruled out perfectly ordinary sample rates: LTE's 3.84 MHz at a 1 us
+        # symbol gives 3.84.  The restriction came from the pulse shaper, not
+        # from the signal — upfirdn needs an integer upsampling factor — and
+        # the Python generator now handles it by rational resampling instead.
+        # MATLABWaveformGenerator still refuses, since MATLAB's upfirdn
+        # requires integer factors.
 
         if self.output_type == "passband" and self.fc >= self.fs / 2:
             raise ValueError("fc must be < fs/2")
@@ -86,8 +93,30 @@ class WaveformConfig:
         return int(round(self.fs * self.Tsymb))
 
     @property
+    def sps_exact(self) -> float:
+        """Samples per symbol without rounding, e.g. 3.84 for LTE at 1 us."""
+        return float(self.fs) * float(self.Tsymb)
+
+    @property
+    def sps_ratio(self) -> tuple:
+        """``sps_exact`` as an exact fraction ``(p, q)``.
+
+        Pulse shaping upsamples by ``p`` and decimates by ``q``, so a
+        fractional samples-per-symbol is realised exactly rather than rounded.
+        The denominator is bounded to keep the intermediate rate sane; every
+        rate the app ships resolves far below that (3.84 -> 96/25).
+        """
+        from fractions import Fraction
+        frac = Fraction(self.sps_exact).limit_denominator(1000)
+        return frac.numerator, frac.denominator
+
+    @property
+    def is_fractional_sps(self) -> bool:
+        return abs(self.sps_exact - round(self.sps_exact)) > 1e-9
+
+    @property
     def output_len(self) -> int:
-        return self.sps * self.Nsymb
+        return int(round(self.sps_exact * self.Nsymb))
 
 
 class Waveform:
