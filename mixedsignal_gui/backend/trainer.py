@@ -3,6 +3,7 @@ import numpy as np
 import os
 import time
 import json
+import traceback
 import concurrent.futures
 
 import torch
@@ -46,6 +47,8 @@ class TrainerThread(QThread):
         # Use provided device parameter instead of auto-detecting
         self.device = torch.device(device)
         self._stop = False
+        # Why the run produced no model, for the UI to show.  None on success.
+        self.error = None
         
         if self.device.type == 'cuda':
             if torch.cuda.is_available():
@@ -274,7 +277,10 @@ class TrainerThread(QThread):
             eta_min=self.lr * 0.01
         )
 
-        # Training loop
+        # Training loop.  epochs_done separates "finished or was stopped" from
+        # "blew up", because only the first is worth saving.
+        epochs_done = 0
+        train_error = None
         try:
             for epoch in range(self.epochs):
                 if self._stop:
@@ -350,9 +356,27 @@ class TrainerThread(QThread):
 
                 # Emit progress
                 self.progress.emit(epoch + 1, self.epochs, train_loss, val_loss, train_acc, val_acc)
+                epochs_done = epoch + 1
 
         except Exception as e:
+            train_error = e
             print(f"Training failed: {e}")
+            traceback.print_exc()
+
+        # A run that raised has weights that mean nothing — often the random
+        # initialisation, if it died in the first batch.  Saving them anyway
+        # produced a .pth with a full metadata sidecar and a green
+        # "Complete - saved", which the Evaluate and Inference tabs then loaded
+        # as a trained model.  Report the failure instead; the training tab
+        # already handles an empty path as "no model saved".
+        if train_error is not None or epochs_done == 0:
+            reason = (f"{type(train_error).__name__}: {train_error}"
+                      if train_error is not None else
+                      "no epoch completed")
+            self.error = reason
+            print(f"Not saving a model: {reason}")
+            self.finished.emit("")
+            return
 
         # Save model + metadata
         out_dir = self.save_dir if self.save_dir else os.path.join(os.getcwd(), 'models')
@@ -369,6 +393,11 @@ class TrainerThread(QThread):
                 "num_classes": num_classes,
                 "input_channels": input_channels,
                 "signal_length": signal_len,
+                # Without these the tabs rebuild the model with library
+                # defaults, so anything trained at a non-default base_filters
+                # could never be loaded again — it failed with dozens of size
+                # mismatches inside load_state_dict.
+                "model_hparams": dict(self.model_hparams),
                 "timestamp": timestamp,
             }
             with open(meta_path, 'w') as f:

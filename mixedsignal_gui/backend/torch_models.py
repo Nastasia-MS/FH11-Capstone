@@ -47,10 +47,16 @@ class TinyConv(nn.Module):
 
 
 class MLP(nn.Module):
-    """Multi-layer perceptron."""
-    def __init__(self, input_size=256, num_classes=2):
+    """Multi-layer perceptron.
+
+    ``forward`` flattens every channel into one vector, so the first layer has
+    to be sized ``in_channels * input_size``.  It used to take ``input_size``
+    alone, which meant any 2-channel I/Q or multi-antenna dataset failed with
+    "mat1 and mat2 shapes cannot be multiplied" on the first batch.
+    """
+    def __init__(self, input_size=256, num_classes=2, in_channels=1):
         super().__init__()
-        self.fc1 = nn.Linear(input_size, 256)
+        self.fc1 = nn.Linear(in_channels * input_size, 256)
         self.fc2 = nn.Linear(256, 128)
         self.fc3 = nn.Linear(128, num_classes)
         self.relu = nn.ReLU()
@@ -162,7 +168,8 @@ def get_model(name, num_classes=2, input_size=256, in_channels=1, **kwargs):
     elif name == 'TinyConv':
         return TinyConv(num_classes=num_classes, in_channels=in_channels)
     elif name == 'MLP':
-        return MLP(input_size=input_size, num_classes=num_classes)
+        return MLP(input_size=input_size, num_classes=num_classes,
+                   in_channels=in_channels)
     elif name == 'ResNet1DOptimized':
         base_filters = int(kwargs.get('base_filters', 64))
         dropout = float(kwargs.get('dropout', 0.2))

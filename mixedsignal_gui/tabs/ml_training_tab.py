@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QComboBox, QGridLayout, QFrame, QProgressBar, QFileDialog,
                                QListWidget, QListWidgetItem, QDoubleSpinBox, QScrollArea,
-                               QCheckBox,
+                               QCheckBox, QMessageBox,
                                QSpinBox, QLineEdit)
 from PySide6.QtCore import Qt, Signal, QSettings
 
@@ -535,6 +535,15 @@ class MLTrainingTab(QWidget):
             if not e.get('augmented', False) and e.get('modulation')
         ]
 
+        # Batch Generate records data_split on every sample it writes, but
+        # nothing ever read it: the held-out test samples were loaded straight
+        # into training, so a 75/25 split had no effect and every accuracy the
+        # app reported was measured on data the model had trained on.  Entries
+        # with no data_split (older datasets, Quick Test Data) are kept, since
+        # they were never part of a split in the first place.
+        held_out = [e for e in base_entries if e.get('data_split') == 'test']
+        base_entries = [e for e in base_entries if e.get('data_split') != 'test']
+
         if not base_entries:
             self.status_label.setText("No datasets with modulation metadata found \u2013 generate some first.")
             return
@@ -569,7 +578,9 @@ class MLTrainingTab(QWidget):
             added += 1
 
         self.clear_data_btn.setEnabled(True)
-        self.status_label.setText(f"Loaded {added} class(es) from registry")
+        held_note = (f"; held back {len(held_out)} test sample(s) for the "
+                     f"Inference tab" if held_out else "")
+        self.status_label.setText(f"Loaded {added} class(es) from registry{held_note}")
         self._update_train_button_state()
 
     def _browse_save_path(self):
@@ -728,7 +739,17 @@ class MLTrainingTab(QWidget):
             labels = getattr(self, '_training_labels', [])
             self.trained_model_ready.emit(model_path, labels)
         else:
-            self.status_label.setText("Training finished (no model saved)")
+            # An empty path means the run produced nothing worth saving.  Say
+            # why: this used to be reported as "Complete - saved" with an
+            # untrained model on disk.
+            reason = getattr(self._trainer, "error", None)
+            if reason:
+                self.status_label.setText(f"❌ Training failed – no model saved")
+                QMessageBox.critical(
+                    self, "Training failed",
+                    f"No model was saved because training did not complete:\n\n{reason}")
+            else:
+                self.status_label.setText("Training finished (no model saved)")
         self.train_btn.setEnabled(True)
         self.train_btn.setText("\u25b6  Start Training")
         if self._trainer:
