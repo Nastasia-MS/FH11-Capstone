@@ -147,9 +147,17 @@ class BatchGenerationConfigDialog(QDialog):
             'LFM':    {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
             'Barker': {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 5e-5},
             'FMCW':   {'fs_override': 1e6, 'fc_override': 200e3, 'Tsymb_override': 1e-4},
+            # Tsymb is overridden for LTE and 5G_NR because their sample rates
+            # are not whole numbers of MHz: 3.84 MHz and 30.72 MHz times the
+            # global 1 us gave 3.84 and 30.72 samples per symbol, which
+            # WaveformConfig rejects ("fs * Tsymb must be an integer"), so both
+            # presets failed before reaching MATLAB.  25 us divides cleanly
+            # into both (96 and 768 samples).
             'WiFi':   {'fs_override': 40e6, 'fc_override': 10e6},
-            'LTE':    {'fs_override': 3.84e6, 'fc_override': 1e6},
-            '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 10e6},
+            'LTE':    {'fs_override': 3.84e6, 'fc_override': 1e6,
+                       'Tsymb_override': 2.5e-5},
+            '5G_NR':  {'fs_override': 30.72e6, 'fc_override': 10e6,
+                       'Tsymb_override': 2.5e-5},
         }
 
         # Per-modulation configurations: {mod: {'enabled': bool, 'M': [M_values], 'fs': val, 'fc': val, ...}}
