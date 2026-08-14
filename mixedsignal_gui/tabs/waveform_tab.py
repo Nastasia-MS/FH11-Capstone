@@ -607,11 +607,8 @@ class WaveformSelectionTab(QWidget):
             if fc >= fs / 2:
                 raise ValueError(f"Invalid parameters: fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
 
-            # Validate: fs * Tsymb must be an integer (samples per symbol)
-            sps = fs * Tsymb
-            if abs(sps - round(sps)) > 1e-9:
-                raise ValueError(f"Invalid parameters: fs * Tsymb = {sps:.6f} must be an integer (samples per symbol)")
-
+            # No samples-per-symbol check here: a fractional fs * Tsymb is
+            # supported now, and WaveformConfig validates whatever remains.
             from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
             pipeline = WaveformPipeline(self.matlab)
 

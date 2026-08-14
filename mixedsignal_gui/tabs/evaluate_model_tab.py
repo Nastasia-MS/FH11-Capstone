@@ -644,13 +644,8 @@ class EvaluateModelTab(QWidget):
                 f"fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
             return
 
-        # Validate: fs * Tsymb must be an integer (samples per symbol)
-        sps_raw = fs * tsymb
-        if abs(sps_raw - round(sps_raw)) > 1e-9:
-            QMessageBox.warning(
-                self, "Invalid Parameters",
-                f"fs × Tsymb = {sps_raw:.6f} must be an integer (samples per symbol)")
-            return
+        # No samples-per-symbol check here: a fractional fs * Tsymb is
+        # supported now, and WaveformConfig validates whatever remains.
 
         # --- Generate waveform via WaveformPipeline ---
         try:
