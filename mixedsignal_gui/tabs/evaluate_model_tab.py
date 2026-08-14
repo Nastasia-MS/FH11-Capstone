@@ -20,10 +20,6 @@ from mixedsignal_gui.widgets.modulation_utils import (mark_unavailable_modulatio
 from mixedsignal_gui.backend.augmentation import (AugmentationPipeline, AWGNAugmentation,
                                   ScalarAmplitudeAndPhaseShift, FrequencyShift)
 
-# Passband-only build: no model takes 2-channel I/Q here.  Kept as an empty
-# set so any stale import continues to resolve.
-IQ_MODELS = set()
-
 
 def _apply_theme_style(fig, widget):
     """Apply the widget's palette colours to a matplotlib figure so it matches the app theme."""

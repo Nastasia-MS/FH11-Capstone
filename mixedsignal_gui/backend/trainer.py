@@ -29,7 +29,6 @@ from .torch_models import get_model
 # their passband spectra are nearly identical and the distinguishing
 # information sits in the complex envelope that this build discards.  Expect
 # roughly a two-of-three ceiling on {QAM, PSK, FSK}.
-IQ_MODELS = set()          # retained so imports elsewhere keep working
 
 
 class TrainerThread(QThread):
@@ -94,11 +93,6 @@ class TrainerThread(QThread):
         except Exception as e:
             print(f"Failed to load {path}: {e}")
         return None
-
-    @property
-    def _is_iq_model(self):
-        """Always False on this branch — every model is trained 1-channel."""
-        return False
 
     def _prepare_1ch_data(self, X_flat):
         """Reshape flat data to (N, 1, L) for 1-channel Conv1d models."""

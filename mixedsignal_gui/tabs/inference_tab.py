@@ -23,9 +23,6 @@ from sklearn.metrics import (
 
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 
-# Models that expect 2-channel IQ input (must stay in sync with trainer.py)
-_IQ_MODELS = set()   # passband-only build: nothing takes 2-channel I/Q
-
 
 # ── Theming helpers ──────────────────────────────────────────────────────
 
@@ -412,7 +409,15 @@ class InferenceResultsTab(QWidget):
             self.data_label.setText("Failed to load any signals from registry")
             return
 
-        self._build_eval_tensors(X_list, y_list)
+        try:
+            self._build_eval_tensors(X_list, y_list)
+        except ValueError as exc:
+            # Qt swallows exceptions raised inside a clicked-slot, so an
+            # incompatible model would look like the button doing nothing.
+            self.data_label.setText(f"Error: {exc}")
+            print(f"[InferenceTab] {exc}")
+            return
+
         extra = f" ({skipped} skipped)" if skipped else ""
         self.data_label.setText(
             f"Loaded {len(X_list)} signals, {len(label_map)} classes{extra}"
@@ -525,7 +530,18 @@ class InferenceResultsTab(QWidget):
             L = min(len(a), target_len)
             X[i, :L] = a[:L]
 
-        # Passband-only: always one real channel.
+        # Passband-only: always one real channel.  Say so up front if the
+        # loaded model was trained on more, rather than letting Conv1d raise
+        # "expected input[...] to have N channels" from inside the forward
+        # pass.  Multi-channel antenna datasets record input_channels = the
+        # antenna count, and nothing here can supply those extra channels.
+        if self.model_in_channels != 1:
+            raise ValueError(
+                f"This model expects {self.model_in_channels} input channels, but "
+                f"this build only produces one real passband channel. It was most "
+                f"likely trained on a multi-channel antenna-array dataset, which "
+                f"this build cannot evaluate.")
+
         X = X[:, np.newaxis, :]        # (N, 1, L)
 
         self.eval_data = torch.from_numpy(X)
