@@ -9,6 +9,7 @@ from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlo
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 from mixedsignal_gui.widgets.modulation_utils import (mark_unavailable_modulations,
                                                      selected_modulation)
+from mixedsignal_gui.backend.generators import unavailable_modulations
 import numpy as np
 from datetime import datetime
 
@@ -25,7 +26,12 @@ class QuickTestDataDialog(QDialog):
         self.modulations_available = ["PAM", "QAM", "PSK", "FSK", "FHSS",
                                       "LFM", "Barker", "FMCW",
                                       "WiFi", "LTE", "5G_NR"]
-        self.selected_modulations = set(self.modulations_available)  # All selected by default
+        # Only pre-select what the current engine can actually generate, so a
+        # run without MATLAB does not queue up WiFi/LTE/5G_NR and then report
+        # them as failures. They stay listed and can be ticked deliberately.
+        self._unavailable = unavailable_modulations(getattr(parent, "matlab", None))
+        self.selected_modulations = {m for m in self.modulations_available
+                                     if m not in self._unavailable}
 
         # M values for minimal test: just 1-2 M values per modulation
         self.test_m_values = {
@@ -54,8 +60,11 @@ class QuickTestDataDialog(QDialog):
         # Checkboxes for each modulation
         self.mod_checkboxes = {}
         for mod in self.modulations_available:
-            chk = QCheckBox(mod)
-            chk.setChecked(True)
+            blocked = self._unavailable.get(mod)
+            chk = QCheckBox(f"{mod}  (needs MATLAB)" if blocked else mod)
+            chk.setChecked(mod not in self._unavailable)
+            if blocked:
+                chk.setToolTip(f"Requires MATLAB and the {blocked}.")
             chk.stateChanged.connect(lambda state, m=mod: self._update_selection(m, state))
             self.mod_checkboxes[mod] = chk
             layout.addWidget(chk)
@@ -115,6 +124,8 @@ class BatchGenerationConfigDialog(QDialog):
         self.global_params = global_params
         self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS",
                             "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR"]
+        # See QuickTestDataDialog: default to what this engine can produce.
+        self._unavailable = unavailable_modulations(getattr(parent, "matlab", None))
 
         # Default M values for each modulation
         self.default_m_values = {
@@ -146,7 +157,7 @@ class BatchGenerationConfigDialog(QDialog):
         for mod in self.modulations:
             wf_defaults = self._waveform_defaults.get(mod, {})
             self.config[mod] = {
-                'enabled': True,
+                'enabled': mod not in self._unavailable,
                 'M_values': self.default_m_values[mod].copy(),
                 'fs_override': wf_defaults.get('fs_override', None),
                 'fc_override': wf_defaults.get('fc_override', None),
