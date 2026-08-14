@@ -315,6 +315,10 @@ class InferenceResultsTab(QWidget):
             model_name = "SimpleCNN"
             signal_length = 0
             in_channels = 1
+            # Architecture-shaping hyperparameters; empty for models saved
+            # before they were recorded, which gives the library defaults
+            # those models were built with.
+            hparams = {}
             if os.path.exists(meta_path):
                 try:
                     with open(meta_path, encoding="utf-8") as f:
@@ -323,6 +327,7 @@ class InferenceResultsTab(QWidget):
                     model_name = meta.get("model_name", "SimpleCNN")
                     signal_length = int(meta.get("signal_length", 0))
                     in_channels = int(meta.get("input_channels", 1))
+                    hparams = meta.get("model_hparams") or {}
                     if meta.get("num_classes"):
                         num_classes = int(meta["num_classes"])
                     if meta.get("class_labels"):
@@ -341,6 +346,7 @@ class InferenceResultsTab(QWidget):
                 num_classes=num_classes,
                 input_size=signal_length or 256,
                 in_channels=in_channels,
+                **hparams,
             )
             self.model.load_state_dict(state_dict)
             self.model.to(device)
@@ -379,6 +385,18 @@ class InferenceResultsTab(QWidget):
             if not e.get("augmented", False) and e.get("modulation")
         ]
 
+        # This panel is labelled "Test Data", so it must not report accuracy on
+        # samples the model trained on.  Batch Generate marks each sample
+        # train/test; prefer the held-out ones, and say so when falling back to
+        # everything, which is what this used to do unconditionally.
+        held_out = [e for e in base_entries if e.get("data_split") == "test"]
+        split_note = ""
+        if held_out:
+            base_entries = held_out
+        else:
+            split_note = " (no held-out test split found — these may include " \
+                         "training samples)"
+
         if not base_entries:
             self.data_label.setText("No datasets with modulation metadata found")
             return
@@ -415,7 +433,7 @@ class InferenceResultsTab(QWidget):
         self._build_eval_tensors(X_list, y_list)
         extra = f" ({skipped} skipped)" if skipped else ""
         self.data_label.setText(
-            f"Loaded {len(X_list)} signals, {len(label_map)} classes{extra}"
+            f"Loaded {len(X_list)} signals, {len(label_map)} classes{extra}{split_note}"
         )
 
     def _on_load_test_folder(self):
@@ -447,16 +465,26 @@ class InferenceResultsTab(QWidget):
                 if self.class_labels else {}
             )
             inferred: list[str] = []
+            unmatched: dict = {}
 
             X_list, y_list = [], []
             for fpath in sorted(signal_files):
-                mod = self._infer_label(fpath)
+                mod = self._infer_label(fpath, known=set(label_map) or None)
                 if mod in label_map:
                     idx = label_map[mod]
+                elif label_map:
+                    # A model is loaded and this file belongs to none of its
+                    # classes.  It used to be given index len(label_map)+k — a
+                    # true label outside the model's output range, which the
+                    # model can never predict, so it silently depressed the
+                    # reported accuracy and added a phantom row.  Skip it and
+                    # say so instead.
+                    unmatched[mod] = unmatched.get(mod, 0) + 1
+                    continue
                 else:
                     if mod not in inferred:
                         inferred.append(mod)
-                    idx = len(label_map) + inferred.index(mod)
+                    idx = inferred.index(mod)
 
                 arr = self._load_array(fpath)
                 if arr is not None:
@@ -468,11 +496,19 @@ class InferenceResultsTab(QWidget):
                 self.class_labels_label.setText(", ".join(self.class_labels))
 
             if not X_list:
-                self.data_label.setText("No loadable signals found")
+                detail = (f" — none matched the model's classes "
+                          f"({', '.join(sorted(unmatched))})" if unmatched else "")
+                self.data_label.setText(f"No loadable signals found{detail}")
                 return
 
             self._build_eval_tensors(X_list, y_list)
-            self.data_label.setText(f"Loaded {len(X_list)} signals from folder")
+            note = ""
+            if unmatched:
+                n = sum(unmatched.values())
+                note = (f"; skipped {n} file(s) whose class is not in the model: "
+                        f"{', '.join(sorted(unmatched))}")
+            self.data_label.setText(
+                f"Loaded {len(X_list)} signals from folder{note}")
 
         except Exception as exc:
             self.data_label.setText(f"Error: {exc}")
@@ -494,16 +530,41 @@ class InferenceResultsTab(QWidget):
         return arr if np.iscomplexobj(arr) else arr.astype(np.float32)
 
     @staticmethod
-    def _infer_label(path: str) -> str:
-        """Guess modulation label from filename or parent folder."""
+    def _infer_label(path: str, known=None) -> str:
+        """Guess the class label for *path*, preferring the model's own classes.
+
+        Splitting the filename on "_" and taking one token cannot represent a
+        class whose name contains an underscore: ``test_5G_NR_4_....npy`` came
+        back as ``5G``, a class no model has, which then became a phantom
+        column in the confusion matrix and shifted every label beside it.
+
+        *known* is the set of classes the loaded model can actually predict.
+        When it is supplied, the parent folder and then the longest matching
+        class name win, so ``5G_NR`` stays whole.
+        """
         stem = os.path.splitext(os.path.basename(path))[0]
+        folder = os.path.basename(os.path.dirname(path))
+
+        if known:
+            if folder in known:
+                return folder
+            body = stem
+            for prefix in ("test_", "train_"):
+                if body.lower().startswith(prefix):
+                    body = body[len(prefix):]
+                    break
+            # Longest first, so 5G_NR beats a hypothetical 5G.
+            for cand in sorted(known, key=len, reverse=True):
+                if body == cand or body.startswith(cand + "_"):
+                    return cand
+
         parts = stem.split("_")
         # test_QAM_16_..., train_PSK_4_...
         if len(parts) >= 2 and parts[0].lower() in ("test", "train"):
             return parts[1]
-        if parts:
+        if parts and parts[0]:
             return parts[0]
-        return os.path.basename(os.path.dirname(path))
+        return folder
 
     @staticmethod
     def _load_array(path: str):
@@ -614,9 +675,21 @@ class InferenceResultsTab(QWidget):
     def _show_confusion_matrix(self):
         if self._cached_y_pred is None:
             return
-        cm = confusion_matrix(self.eval_labels, self._cached_y_pred)
+        # Pin the axes to the model's own classes.  Without labels=, sklearn
+        # sizes the matrix from whatever labels happen to be present, so a test
+        # set missing a class silently shifted every row and column against the
+        # names drawn beside them.
+        cm = confusion_matrix(self.eval_labels, self._cached_y_pred,
+                              labels=list(range(self._num_classes())))
         self._cm_data = (cm,)
         self._plot_confusion_matrix(cm)
+
+    def _num_classes(self) -> int:
+        """How many classes the loaded model can actually predict."""
+        if self.class_labels:
+            return len(self.class_labels)
+        return int(self.model_metadata.get("num_classes", 0)) or (
+            int(max(self.eval_labels)) + 1 if self.eval_labels is not None else 0)
 
     def _plot_confusion_matrix(self, cm):
         self.cm_figure.clear()
@@ -665,9 +738,15 @@ class InferenceResultsTab(QWidget):
     def _show_report(self):
         if self._cached_y_pred is None:
             return
-        target_names = self.class_labels if self.class_labels else None
+        # labels= must accompany target_names, or sklearn raises as soon as the
+        # test set does not contain every class ("Number of classes, 2, does
+        # not match size of target_names, 4"), which left the report showing
+        # its previous text beside a freshly drawn matrix.
+        n = self._num_classes()
+        target_names = self.class_labels if len(self.class_labels) == n else None
         report = classification_report(
             self.eval_labels, self._cached_y_pred,
+            labels=list(range(n)),
             target_names=target_names, zero_division=0,
         )
         accuracy = (self._cached_y_pred == self.eval_labels).mean()
@@ -729,10 +808,13 @@ class InferenceResultsTab(QWidget):
 # ── Utility ──────────────────────────────────────────────────────────────
 
 def plt_cmap(n: int):
-    """Return a callable colormap with *n* distinct colours."""
-    import matplotlib.pyplot as plt
-    if n <= 10:
-        cm = plt.cm.get_cmap("tab10")
-    else:
-        cm = plt.cm.get_cmap("tab20")
+    """Return a callable colormap with *n* distinct colours.
+
+    Uses ``matplotlib.colormaps``; ``plt.cm.get_cmap`` was deprecated in 3.7
+    and removed in 3.9, so on a current matplotlib this raised AttributeError
+    on every evaluation.  Nothing caught it, so the ROC tab came up blank while
+    the confusion matrix and report beside it looked healthy.
+    """
+    import matplotlib
+    cm = matplotlib.colormaps["tab10" if n <= 10 else "tab20"]
     return lambda i: cm(i % cm.N)
