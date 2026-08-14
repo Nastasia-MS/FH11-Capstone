@@ -69,6 +69,7 @@ class EvaluateModelTab(QWidget):
 
         self._last_signal = None
         self._last_modulation = None
+        self._last_source = "generated"
 
         self.setup_ui()
         install_wheel_blocker(self)
@@ -114,7 +115,7 @@ class EvaluateModelTab(QWidget):
         title = QLabel("Evaluate Model")
         title.setProperty("class", "section-title")
         layout.addWidget(title)
-        subtitle = QLabel("Generate a waveform and classify it")
+        subtitle = QLabel("Generate or import a waveform and classify it")
         subtitle.setProperty("class", "section-subtitle")
         layout.addWidget(subtitle)
 
@@ -244,7 +245,17 @@ class EvaluateModelTab(QWidget):
         self.generate_btn.clicked.connect(self.generate_and_classify)
         layout.addWidget(self.generate_btn)
 
-        self.status_label = QLabel("Load a model, then generate a waveform.")
+        # Classifying a recording is the counterpart to classifying a generated
+        # waveform: same model, same preprocessing, same plots, but the samples
+        # come from disk.  Without this the tab can only be exercised on signals
+        # the toolbox produced itself, which is the one case a field evaluation
+        # is not interested in.
+        self.import_btn = QPushButton("Import Waveform && Classify")
+        self.import_btn.setMinimumHeight(32)
+        self.import_btn.clicked.connect(self.import_and_classify)
+        layout.addWidget(self.import_btn)
+
+        self.status_label = QLabel("Load a model, then generate or import a waveform.")
         self.status_label.setProperty("class", "stat-label")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -639,6 +650,93 @@ class EvaluateModelTab(QWidget):
     # Generate waveform + classify
     # ------------------------------------------------------------------
 
+    def import_and_classify(self):
+        """Load a recorded waveform from disk, plot it, and classify it.
+
+        The counterpart to generate_and_classify: the samples come from a file
+        instead of the generator, but the model, preprocessing, and plots are
+        the same, so a field recording and a synthetic waveform are scored on
+        equal terms.
+        """
+        settings = QSettings("MyCompany", "MixedSignalGUI")
+        start_dir = settings.value("dataPath", "") or ""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Import Waveform", start_dir,
+            "Signal files (*.npy *.npz);;All Files (*)")
+        if not filepath:
+            return
+
+        try:
+            arr = np.load(filepath, allow_pickle=True)
+            if isinstance(arr, np.lib.npyio.NpzFile):
+                keys = list(arr.keys())
+                if not keys:
+                    raise ValueError("archive contains no arrays")
+                arr = arr[keys[0]]
+            data = np.asarray(arr).reshape(-1)
+            if data.size == 0:
+                raise ValueError("file contains no samples")
+        except Exception as e:
+            QMessageBox.critical(self, "Import Failed",
+                                 f"Could not read {os.path.basename(filepath)}:\n\n{e}")
+            return
+
+        # A sidecar written by this toolbox carries fs/fc; otherwise fall back to
+        # the values in the parameter panel so the plots are still labelled.
+        fs, fc = float(self.fs), float(self.fc)
+        meta_path = os.path.splitext(filepath)[0] + ".json"
+        source = "panel values"
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    side = json.load(f)
+                fs = float(side.get("fs", fs))
+                fc = float(side.get("fc", fc))
+                source = os.path.basename(meta_path)
+            except Exception as e:
+                print(f"[EvaluateTab] Could not read sidecar {meta_path}: {e}")
+
+        name = os.path.basename(filepath)
+        self._last_signal = data
+        self._last_modulation = os.path.splitext(name)[0]
+        self._last_source = "imported"
+
+        self._plot_signal(data, fs=fs, fc=fc, sps=None, modulation=None,
+                          m=None, nsymb=None, baseband_symbols=None)
+
+        if self.model is None:
+            self.result_label.setText("No model loaded")
+            self.status_label.setText("Load a model to classify the imported waveform.")
+            return
+
+        self.status_label.setText(
+            f"Imported {name} — {len(data)} samples, "
+            f"{'complex' if np.iscomplexobj(data) else 'real'}, "
+            f"fs from {source}. Classifying…")
+        self._classify_signal(data)
+
+    def _plot_signal(self, data, *, fs, fc, sps, modulation, m, nsymb,
+                     baseband_symbols):
+        """Draw the four signal views. Shared by the generate and import paths."""
+        t = np.arange(len(data)) / fs * 1e6   # time axis in microseconds
+
+        if np.iscomplexobj(data):
+            self.waveform_plot.plot_data(t, np.real(data), np.imag(data))
+            ft = np.fft.fftshift(np.fft.fft(data))
+            freqs = np.fft.fftshift(np.fft.fftfreq(len(data), 1 / fs)) * 1e-6
+        else:
+            self.waveform_plot.plot_data(t, np.real(data))
+            ft = np.fft.fft(data)
+            freqs = np.fft.fftfreq(len(data), 1 / fs) * 1e-6
+
+        self.freq_plot.plot_data(freqs, np.abs(ft))
+        self.constellation_plot.plot_data(
+            data=data, fs=fs, fc=fc, sps=sps, M=m,
+            modulation=modulation, nsymb=nsymb,
+            baseband_symbols=baseband_symbols,
+        )
+        self.spectrogram_plot.plot_data(x=data, fs=fs, modulation=modulation)
+
     def generate_and_classify(self):
         modulation = selected_modulation(self.waveform_combo)
         fs = float(self.fs)
@@ -687,33 +785,12 @@ class EvaluateModelTab(QWidget):
 
         self._last_signal = data
         self._last_modulation = modulation
+        self._last_source = "generated"
         baseband_symbols = result.get("baseband_symbols")
 
         # --- Update plots (matches Waveform Selection tab) ---
-        t = np.arange(len(data)) / fs * 1e6   # time axis in µs
-
-        # Time domain: for complex data plot I and Q; for real plot as-is
-        if np.iscomplexobj(data):
-            self.waveform_plot.plot_data(t, np.real(data), np.imag(data))
-        else:
-            self.waveform_plot.plot_data(t, np.real(data))
-
-        # Frequency domain: for complex use fftshift for centered spectrum
-        if np.iscomplexobj(data):
-            ft = np.fft.fftshift(np.fft.fft(data))
-            freqs = np.fft.fftshift(np.fft.fftfreq(len(data), 1 / fs)) * 1e-6
-        else:
-            ft = np.fft.fft(data)
-            freqs = np.fft.fftfreq(len(data), 1 / fs) * 1e-6
-
-        self.freq_plot.plot_data(freqs, np.abs(ft))
-
-        self.constellation_plot.plot_data(
-            data=data, fs=fs, fc=fc, sps=sps, M=m,
-            modulation=modulation, nsymb=nsymb,
-            baseband_symbols=baseband_symbols,
-        )
-        self.spectrogram_plot.plot_data(x=data, fs=fs, modulation=modulation)
+        self._plot_signal(data, fs=fs, fc=fc, sps=sps, modulation=modulation,
+                          m=m, nsymb=nsymb, baseband_symbols=baseband_symbols)
 
         # --- Classify ---
         if self.model is None:
@@ -788,8 +865,11 @@ class EvaluateModelTab(QWidget):
             self._plot_probabilities(probs, target='channel')
         else:
             self.result_label.setText(f"{pred_name}  ({confidence:.1f}%)")
+            # "Imported" vs "Generated": the label matters here, because the whole
+            # point of scoring a recording is that it did not come from the generator.
+            verb = "Imported" if getattr(self, "_last_source", "generated") == "imported" else "Generated"
             self.status_label.setText(
-                f"Generated {self._last_modulation} waveform → classified as {pred_name}"
+                f"{verb} {self._last_modulation} → classified as {pred_name}"
             )
             self._plot_probabilities(probs, target='generate')
 

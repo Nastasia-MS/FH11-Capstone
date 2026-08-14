@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mixedsignal-gui"
+name = "rfml-toolkit"
 version = "0.1.0"
 authors = [
     { name="Nastasia Maldei-Stumm", email="n.maldeistumm@utexas.edu" }
 ]
-description = "Signal generation, augmentation, and classification GUI with ML"
+description = "RFML Toolkit: end-to-end waveform generation, channel augmentation, and classification"
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["signal-processing", "ML", "GUI", "PySide6", "Sionna", "Tensorflow"]
@@ -37,10 +37,10 @@ matlab = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Nastasia-MS/FH11-Capstone"
+Homepage = "https://github.com/yliyli/RFML-Toolkit"
 
 [project.scripts]
-mixedsignal-gui = "mixedsignal_gui.main_window:main"
+rfml-toolkit = "mixedsignal_gui.main_window:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

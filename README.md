@@ -1,4 +1,4 @@
-# Mixed Signal GUI
+# RFML Toolkit
 
 **Signal Generation & Classification Dashboard**
 
@@ -24,7 +24,7 @@ A PySide6-based graphical application for generating digital communication wavef
 ### Quick Install
 
 ```bash
-pip install mixedsignal-gui
+pip install rfml-toolkit
 ```
 
 ### Prerequisites
@@ -59,8 +59,8 @@ If you want to use MATLAB-based waveform generation:
 ### Install from Source (for developers)
 
 ```bash
-git clone https://github.com/Nastasia-MS/FH11-Capstone.git
-cd FH11-Capstone
+git clone https://github.com/yliyli/RFML-Toolkit.git
+cd RFML-Toolkit
 pip install -e .
 ```
 
@@ -76,7 +76,7 @@ pip install -e ".[dev]"
 After installation, launch the GUI from the command line:
 
 ```bash
-mixedsignal-gui
+rfml-toolkit
 ```
 
 Or from Python:
@@ -219,11 +219,11 @@ This project makes use of:
 If you use this software in your research, please cite:
 
 ```bibtex
-@software{mixedsignal_gui,
+@software{rfml_toolkit,
   author = {Maldei-Stumm, Nastasia},
-  title = {Mixed Signal GUI: Signal Generation & Classification Dashboard},
+  title = {RFML Toolkit: Signal Generation & Classification Dashboard},
   year = {2025},
-  url = {https://github.com/Nastasia-MS/FH11-Capstone}
+  url = {https://github.com/yliyli/RFML-Toolkit}
 }
 ```
 
@@ -231,4 +231,4 @@ If you use this software in your research, please cite:
 
 ## Support
 
-For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/Nastasia-MS/FH11-Capstone).
+For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/yliyli/RFML-Toolkit).
