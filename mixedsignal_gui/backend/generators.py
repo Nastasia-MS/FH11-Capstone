@@ -22,17 +22,23 @@ class MATLABWaveformGenerator:
 
         from mixedsignal_gui.backend.core import WaveformConfig
 
-        # waveform_generator.m does sps = round(fs*Tsymb) and hands it to
-        # upfirdn, whose factors must be positive integers.  A fractional value
-        # would be silently rounded there, giving a different symbol rate than
-        # asked for, so refuse rather than mislead.  The Python generator
-        # resamples rationally and has no such limit.
-        if getattr(cfg, "is_fractional_sps", False):
+        # waveform_generator.m rounds before it does anything else — line 58 is
+        # sps = round(fs*Tsymb) — so MATLAB never errors on a fractional rate,
+        # it silently generates at the rounded symbol rate instead.  That is
+        # worth refusing, but only where it actually changes the output: the
+        # pulse shaper at line 143 is reached by PAM/QAM/PSK alone.  WiFi, LTE
+        # and 5G_NR return at lines 119-135, before sps is used at all, and the
+        # FSK/FHSS/radar sub-functions round it for themselves.  Refusing those
+        # blocked the LTE and 5G_NR presets, whose 3.84 and 30.72 MHz rates are
+        # correct for their standards, over a limit that does not apply to them.
+        if (getattr(cfg, "is_fractional_sps", False)
+                and cfg.modulation in PULSE_SHAPED_MODULATIONS):
             raise RuntimeError(
                 f"fs x Tsymb = {cfg.sps_exact:g} samples per symbol is not a whole "
-                f"number, and MATLAB's upfirdn requires integer resampling "
-                f"factors. Adjust fs or Tsymb, or use the built-in Python "
-                f"generator, which handles fractional rates by rational "
+                f"number. waveform_generator.m would round it to {cfg.sps} before "
+                f"pulse shaping, generating at a different symbol rate than the one "
+                f"requested. Adjust fs or Tsymb, or use the built-in Python "
+                f"generator, which realises fractional rates exactly by rational "
                 f"resampling.")
 
         eng = self.matlab_engine.eng
@@ -90,6 +96,13 @@ _BARKER_CODES = {
     11: [+1, +1, +1, -1, -1, -1, +1, -1, -1, +1, -1],
     13: [+1, +1, +1, +1, +1, -1, -1, +1, +1, -1, +1, -1, +1],
 }
+
+#: Modulations that go through the pulse shaper — symbols upsampled by
+#: samples-per-symbol and filtered.  These are the only ones whose output
+#: depends on sps being exact: in waveform_generator.m every other family
+#: either returns before line 143 (WiFi/LTE/5G_NR) or rounds sps inside its
+#: own sub-function (FSK/FHSS/LFM/Barker/FMCW).
+PULSE_SHAPED_MODULATIONS = {"PAM", "QAM", "PSK"}
 
 #: Waveforms that are real communication standards rather than closed-form
 #: maths.  MATLAB builds genuine protocol frames for these via its WLAN /

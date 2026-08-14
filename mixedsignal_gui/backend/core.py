@@ -165,16 +165,30 @@ class Waveform:
         MATLAB stays the reference implementation, so it wins whenever the
         engine is running.  An explicitly injected ``generator_impl`` always
         takes precedence, which is how callers and tests force one or the other.
+
+        The one exception is a fractional samples-per-symbol on a pulse-shaped
+        modulation.  waveform_generator.m rounds sps before pulse shaping, so
+        MATLAB would generate at a symbol rate the caller did not ask for; the
+        Python generator realises the rate exactly by rational resampling.  It
+        therefore wins that case on merit rather than availability, and the
+        choice stays visible because ``last_metadata`` records which engine ran.
         """
         if self._generator is not None:
             return
 
+        from mixedsignal_gui.backend.generators import (
+            MATLABWaveformGenerator, PythonWaveformGenerator,
+            PULSE_SHAPED_MODULATIONS)
+
         engine = self.matlab_engine
-        if engine is not None and getattr(engine, "is_available", lambda: False)():
-            from mixedsignal_gui.backend.generators import MATLABWaveformGenerator
+        engine_live = (engine is not None
+                       and getattr(engine, "is_available", lambda: False)())
+        prefer_python = (self.config.is_fractional_sps
+                         and self.config.modulation in PULSE_SHAPED_MODULATIONS)
+
+        if engine_live and not prefer_python:
             self._generator = MATLABWaveformGenerator(engine)
         else:
-            from mixedsignal_gui.backend.generators import PythonWaveformGenerator
             self._generator = PythonWaveformGenerator()
 
     def generate(self) -> np.ndarray:
