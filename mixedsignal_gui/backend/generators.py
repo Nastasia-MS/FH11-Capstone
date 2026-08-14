@@ -244,19 +244,27 @@ class PythonWaveformGenerator:
 
         Phase carries across interval boundaries, which is what makes FSK/FHSS
         continuous-phase rather than a sequence of restarted tones.
+
+        ``sps`` may be fractional.  Boundaries are placed at ``round(k * sps)``
+        rather than stepped by a constant integer, so the symbol rate stays
+        exact and the intervals absorb the remainder by alternating length
+        (3.84 gives 4, 4, 3, 4, 4 ...).  Stepping by a rounded sps instead
+        would drift the symbol rate by up to 4% at the rates the LTE and 5G_NR
+        presets use, while output_len is computed exactly.
         """
         sig = np.zeros(output_len, dtype=np.complex128)
         phase = 0.0
-        idx = 0
-        for f_offset in freq_offsets:
-            n = min(sps, output_len - idx)
+        for k, f_offset in enumerate(freq_offsets):
+            idx = int(round(k * sps))
+            end = min(int(round((k + 1) * sps)), output_len)
+            n = end - idx
             if n <= 0:
-                break
+                if idx >= output_len:
+                    break
+                continue
             step = 2 * np.pi * f_offset / fs
-            phases = phase + step * np.arange(n)
-            sig[idx:idx + n] = np.exp(1j * phases)
+            sig[idx:end] = np.exp(1j * (phase + step * np.arange(n)))
             phase = (phase + step * n) % (2 * np.pi)
-            idx += n
         return sig
 
     # -- waveform families ----------------------------------------------
@@ -338,7 +346,9 @@ class PythonWaveformGenerator:
 
         self.last_metadata = {"generator": "python"}
 
-        sps = cfg.sps
+        # Exact, not cfg.sps: output_len is computed from the exact rate, so
+        # timing the symbols by a rounded one would drift them against it.
+        sps = cfg.sps_exact
         output_len = cfg.output_len
         baseband = cfg.output_type.lower() == "baseband"
 
