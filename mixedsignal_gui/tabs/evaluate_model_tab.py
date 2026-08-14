@@ -550,6 +550,10 @@ class EvaluateModelTab(QWidget):
                 num_classes = meta.get('num_classes', 2)
                 signal_length = meta.get('signal_length', 256)
                 in_channels = meta.get('input_channels', 1)
+                # Architecture-shaping hyperparameters, absent from models
+                # saved before they were recorded — an empty dict then gives
+                # the library defaults those models were actually built with.
+                hparams = meta.get('model_hparams') or {}
                 if meta.get('class_labels'):
                     self.class_labels = meta['class_labels']
             else:
@@ -557,10 +561,11 @@ class EvaluateModelTab(QWidget):
                 num_classes = 2
                 signal_length = 256
                 in_channels = 1
+                hparams = {}
 
             # Get current device setting
             device = self.get_device()
-            
+
             # Load model to the correct device
             state_dict = torch.load(filepath, map_location=device, weights_only=True)
             model = get_model(
@@ -568,6 +573,7 @@ class EvaluateModelTab(QWidget):
                 num_classes=num_classes,
                 input_size=signal_length,
                 in_channels=in_channels,
+                **hparams,
             )
             model.load_state_dict(state_dict)
             model.to(device)
