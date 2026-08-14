@@ -18,6 +18,39 @@ from .torch_models import get_model
 IQ_MODELS = {'ResNet1DOptimized'}
 
 
+def pack_multichannel(a, target_len: int) -> np.ndarray:
+    """Lay a multi-antenna capture out as model input channels.
+
+    ``a`` is ``(n_ant, L)`` as produced by the antenna-array option in the
+    stochastic and ray-tracing augmentations, which returns complex64.
+
+    Complex input becomes ``2 * n_ant`` real channels ordered
+    ``[Re(a0), Im(a0), Re(a1), Im(a1), ...]``; real input stays ``n_ant``
+    channels.  For a single antenna the complex case is exactly ``[I, Q]``,
+    the same layout the 1-D path produces, so the two agree by construction.
+
+    This lives here, and is imported by both tabs, because the layout used to
+    be re-derived in three places and they disagreed: the trainer cast the
+    array to float32 (discarding Q outright) while the tabs flattened it, kept
+    only antenna 0, and split *its* real and imaginary parts into the two
+    channels.  A 2-antenna model trained at 100% then scored 50% at inference
+    with no error, because the channel count still matched.
+    """
+    a = np.asarray(a)
+    if a.ndim == 1:
+        a = a[np.newaxis, :]
+    n_ant = a.shape[0]
+    L = min(a.shape[-1], target_len)
+    if np.iscomplexobj(a):
+        out = np.zeros((2 * n_ant, target_len), dtype=np.float32)
+        out[0::2, :L] = np.real(a[:, :L])
+        out[1::2, :L] = np.imag(a[:, :L])
+    else:
+        out = np.zeros((n_ant, target_len), dtype=np.float32)
+        out[:, :L] = a[:, :L]
+    return out
+
+
 class TrainerThread(QThread):
     # Signals: epoch, total_epochs, train_loss, val_loss, train_acc, val_acc
     progress = Signal(int, int, float, float, float, float)
@@ -180,20 +213,23 @@ class TrainerThread(QThread):
             return
 
         if is_multi_channel:
-            # Multi-channel: stack as (batch, num_channels, target_len)
-            num_ch = X_list[0].shape[0]
-            X = np.zeros((len(X_list), num_ch, target_len), dtype=np.float32)
-            for i, a in enumerate(X_list):
-                if a.ndim == 1:
-                    # Mixed: treat 1D as single-channel, replicate
-                    L = min(len(a), target_len)
-                    for c in range(num_ch):
-                        X[i, c, :L] = a[:L].astype(np.float32)
-                else:
-                    L = min(a.shape[-1], target_len)
-                    X[i, :, :L] = a[:, :L].astype(np.float32)
-            input_channels = num_ch
-            print(f"Multi-channel mode: {num_ch} channels, {target_len} samples")
+            # Multi-channel: stack as (batch, num_channels, target_len).
+            # pack_multichannel keeps quadrature — this used to cast straight
+            # to float32, discarding Q with only a ComplexWarning.
+            packed = [pack_multichannel(a, target_len) for a in X_list]
+            channel_counts = {p.shape[0] for p in packed}
+            if len(channel_counts) > 1:
+                raise ValueError(
+                    f"Mixed channel counts in one training set: {sorted(channel_counts)}. "
+                    f"Every file must have the same number of antennas, and be "
+                    f"consistently real or complex.")
+            X = np.stack(packed)
+            input_channels = X.shape[1]
+            was_complex = any(np.iscomplexobj(a) for a in X_list)
+            note = (f" ({input_channels // 2} antenna(s) x I/Q)"
+                    if was_complex else "")
+            print(f"Multi-channel mode: {input_channels} channels{note}, "
+                  f"{target_len} samples")
         else:
             # Pad/truncate to target length.  The buffer must stay complex when
             # the data is: casting to float32 here silently dropped Q, which

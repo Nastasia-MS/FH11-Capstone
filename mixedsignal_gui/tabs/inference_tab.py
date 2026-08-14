@@ -526,7 +526,13 @@ class InferenceResultsTab(QWidget):
         meaningless for them.  Complex is now carried through as complex and
         split into channels once, in _prepare_iq.
         """
-        arr = np.asarray(sig).ravel()
+        arr = np.asarray(sig)
+        # Keep a multi-antenna capture 2-D.  Flattening it here concatenated
+        # the antennas end to end, so truncating to the model length left only
+        # antenna 0 and the rest of the capture was silently discarded.
+        if arr.ndim == 2 and arr.shape[0] <= 64:
+            return arr if np.iscomplexobj(arr) else arr.astype(np.float32)
+        arr = arr.ravel()
         return arr if np.iscomplexobj(arr) else arr.astype(np.float32)
 
     @staticmethod
@@ -603,8 +609,21 @@ class InferenceResultsTab(QWidget):
 
     def _build_eval_tensors(self, X_list: list, y_list: list):
         """Pad/truncate, shape for the model, store as tensors."""
-        # Target length: use model's expected length, or max in batch
-        target_len = self.model_signal_length or max(a.size for a in X_list)
+        # Target length: use model's expected length, or max in batch.
+        # shape[-1], not .size — a (4, 2048) capture is 2048 long, not 8192.
+        target_len = self.model_signal_length or max(a.shape[-1] for a in X_list)
+
+        # Multi-antenna captures go through the same packing the trainer used,
+        # so the channels mean the same thing on both sides.
+        if any(np.asarray(a).ndim == 2 for a in X_list):
+            from mixedsignal_gui.backend.trainer import pack_multichannel
+            X = np.stack([pack_multichannel(a, target_len) for a in X_list])
+            self.eval_data = torch.from_numpy(X)
+            self.eval_labels = np.asarray(y_list, dtype=np.int64)
+            self._invalidate_cache()
+            self.eval_all_btn.setEnabled(True)
+            self.eval_tabs.setEnabled(True)
+            return
 
         # Keep the buffer complex when the data is, so Q survives to _prepare_iq.
         any_complex = any(np.iscomplexobj(a) for a in X_list)

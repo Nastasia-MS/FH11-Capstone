@@ -720,12 +720,20 @@ class EvaluateModelTab(QWidget):
         target: 'generate' updates the Generate & Classify tab,
                 'channel' updates the Channel Test tab.
         """
-        from mixedsignal_gui.backend.trainer import TrainerThread
+        from mixedsignal_gui.backend.trainer import TrainerThread, pack_multichannel
         target_len = TrainerThread.TARGET_LENGTH
+
+        # A multi-antenna capture is packed the same way the trainer packed it,
+        # rather than flattened — flattening kept only antenna 0 and then read
+        # its Q as though it were antenna 1.
+        arr = np.asarray(data)
+        if arr.ndim == 2 and arr.shape[0] <= 64:
+            X = pack_multichannel(arr, target_len)[np.newaxis]
+            return self._run_model(X, target)
 
         # Keep the native dtype: casting to float32 here used to discard Q
         # before the IQ branch could ever see it.
-        raw = np.asarray(data).ravel()
+        raw = arr.ravel()
         if len(raw) > target_len:
             raw = raw[:target_len]
         elif len(raw) < target_len:
@@ -754,6 +762,10 @@ class EvaluateModelTab(QWidget):
             # receiver front-end would deliver.
             X = np.real(raw).astype(np.float32)[np.newaxis, np.newaxis, :]
 
+        self._run_model(X, target)
+
+    def _run_model(self, X, target='generate'):
+        """Run the loaded model on a prepared (1, C, L) array and show the result."""
         tensor = torch.from_numpy(X).to(self.get_device())
         self.model.eval()
         with torch.no_grad():
