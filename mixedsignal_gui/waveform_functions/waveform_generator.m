@@ -353,8 +353,10 @@ function symbols = generate_symbols(num_symbols, M, modulation)
 
     switch upper(modulation)
         case 'PAM'
-            % Pulse Amplitude Modulation
-            symbols = pammod(data, M);
+            % Pulse Amplitude Modulation.  'gray' is requested explicitly:
+            % pammod defaults to binary mapping, unlike qammod and the pskmod
+            % call below, which would leave PAM the odd one out.
+            symbols = pammod(data, M, 0, 'gray');
             % Normalize for unit average power
             symbols = symbols / sqrt(mean(abs(symbols).^2));
 

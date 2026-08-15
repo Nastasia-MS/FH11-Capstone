@@ -3,7 +3,7 @@
 % Agility, a full-day workshop at IEEE MILCOM 2026.
 % Format: IEEE conference mode, 10-point, two-column, US Letter; six-page draft.
 % Repository reviewed: https://github.com/yliyli/RFML-Toolkit (main, 2026-08-14)
-% Red TODO markers identify information or results that remain unavailable.
+% Red TODO markers identify information that remains unavailable.
 \documentclass[10pt,conference,letterpaper]{IEEEtran}
 \IEEEoverridecommandlockouts
 
@@ -19,21 +19,20 @@
 \newcommand{\placeholder}[2]{%
   \fbox{\parbox[c][#1][c]{0.94\columnwidth}{\centering\small #2}}}
 
-\title{A Flexible End-to-End Radio-Frequency Machine-Learning Toolbox for Rapid Channel-Aware Experimentation}
+\title{A Flexible End-to-End Radio-Frequency Machine-Learning Toolbox for Rapid Channel-Aware Dataset Construction and Experimentation}
 
 \author{%
-\IEEEauthorblockN{\todo{Author names and order}}
-\IEEEauthorblockA{%
-\textit{\todo{Department and institution}}\\
-\todo{City, State, USA}\\
-\todo{Email addresses}}
-}
+\IEEEauthorblockN{Yiyang Li, Nicholas Borda, Tony Chae, Christopher Deng, Amaury Jayr,\\
+Shivansh Madan, Matthew Xu, Nastasia Maldei-Stumm, Agastya Prabhu, and Kaushik Chowdhury}
+\IEEEauthorblockA{\textit{The University of Texas at Austin}, Austin, TX, USA\\
+Corresponding author: kaushik@utexas.edu}}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Radio-frequency machine-learning (RFML) experiments often require separate tools for waveform synthesis, channel modeling, dataset preparation, model training, and field-data analysis. Connecting these tools repeatedly increases setup effort and makes it difficult to preserve consistent signal and channel metadata across an experiment. This paper presents a flexible, research-enabling toolbox that integrates parameterized waveform generation, channel augmentation, dataset management, neural-network training, evaluation, and visualization in a unified end-to-end workflow. Its channel layer supports configurable impairments and stochastic models together with reusable interfaces for importing Sionna-compatible digital twins, measured channel responses, and recorded in-phase and quadrature (I/Q) data; any of these can be applied across an entire dataset with per-example parameters drawn from a single reproducible seed. Generated examples retain waveform, channel, and provenance metadata, enabling controlled comparisons among clean, simulated-channel, and measurement-augmented datasets. The principal contribution is the integrated workflow: it allows researchers to move rapidly from a signal or propagation hypothesis to a repeatable training and evaluation experiment without developing a new data pipeline for each study. A two-stage live demonstration is shown to illustrate the toolbox's adaptability to classifying waveforms in specific realistic scenarios including UT campus and Hat Creek Radio Observatory.
+Radio-frequency machine-learning (RFML) experiments often rely on separate tools for waveform synthesis, channel modeling, dataset preparation, model training, and field-data analysis. Integrating them for each new study increases setup effort and makes consistent signal and channel metadata difficult to preserve. This paper presents a flexible, research-enabling toolbox that unifies parameterized waveform generation, channel augmentation, dataset management, neural-network training, inference, and visualization. Its channel layer supports configurable impairments, stochastic models, and reusable interfaces for Sionna-compatible digital twins and measured channel responses, while its data layer accepts recorded in-phase and quadrature (I/Q) data. Dataset-wide augmentation draws per-example parameters from a reproducible run-level seed, and each example retains its waveform, channel, and processing metadata. The principal contribution is an open-source, publicly accessible workflow that enables researchers to move from a signal or propagation hypothesis to repeatable training and inference without developing a new data pipeline for each study. At the workshop, a two-stage live demonstration will allow participants to explore this workflow, including ray-tracing examples using the bundled digital twins of the University of Texas at Austin (UT Austin) and Hat Creek Radio Observatory (HCRO).
+
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -47,61 +46,64 @@ Spectrum-sharing systems depend on timely and trustworthy observations of the ra
 
 Conducting such studies commonly requires researchers to connect waveform generators, propagation simulators, measurement files, learning frameworks, and visualization utilities through experiment-specific scripts. This fragmentation slows exploratory work and creates opportunities for inconsistent preprocessing, sample-rate assumptions, data partitions, and metadata. A reusable end-to-end environment can reduce this integration burden while making clean, simulated, and measured conditions easier to compare under a common experimental configuration.
 
-This work presents an interactive radio-frequency machine-learning (RFML) toolbox for that purpose. The software links waveform generation, channel augmentation, visualization, dataset construction, model training, inference, and evaluation through a shared desktop workflow. Each example remains associated with the waveform parameters, channel configuration, source asset, and processing decisions used to produce it. Researchers can therefore change a waveform, channel source, digital twin, or learner without reconstructing the remainder of the experiment. The toolbox is intended to support rapid hypothesis testing while retaining the provenance needed for repeatable comparisons and later field validation.
+This work presents an interactive radio-frequency machine-learning (RFML) toolbox for that purpose. The software links waveform generation, channel augmentation, visualization, dataset construction, model training, inference, and evaluation through a shared desktop workflow. Each example remains associated with the waveform parameters, channel configuration, source asset, and processing decisions used to produce it. Researchers can therefore change a waveform, channel source, digital twin, or classification model without reconstructing the remainder of the experiment. The toolbox is intended to support rapid hypothesis testing while keeping the metadata needed for repeatable comparisons and later field validation.
 
-The work is motivated by the National Science Foundation (NSF) Spectrum Innovation Initiative: National Radio Dynamic Zones (SII-NRDZ) program. An NRDZ is a spatial region, potentially spanning noncontiguous frequencies, in which automated spectrum-management mechanisms control electromagnetic energy entering, leaving, or occupying the zone \cite{nsfnrdz}. The MITRE-led SPARKIE effort is developing an experimental dynamic-spectrum-sharing environment at the Hat Creek Radio Observatory (HCRO), where radio astronomy observations must be protected from harmful interference while permitting controlled spectrum use \cite{mitrenrdz}. Site-specific propagation and repeatable RFML experiments are relevant to this objective, although the classifier described here does not implement a zone-management policy itself.
+The work is motivated by the National Science Foundation (NSF) Spectrum Innovation Initiative: National Radio Dynamic Zones (SII-NRDZ) program. A national radio dynamic zone (NRDZ) is a spatial region, potentially spanning noncontiguous frequencies, in which automated spectrum-management mechanisms regulate electromagnetic energy entering, leaving, or occupying the zone \cite{nsfnrdz}. The MITRE-led SPARKIE effort is developing an experimental dynamic-spectrum-sharing environment at the Hat Creek Radio Observatory (HCRO), where radio astronomy observations must be protected from harmful interference while permitting controlled spectrum use \cite{mitrenrdz}. In this work, we use our toolkit to develop a classifier and accompanying pipeline to identify this interference. While the toolkit is application agnostic, we use this NRDZ at HCRO as an example for the rest of the paper. This includes a ray-traced digital twin of the NRDZ region as well as on-site field recordings captured with software-defined radios and measured channel responses. All of which entered the same workflow through the interfaces described in Section~\ref{sec:architecture}.
 
-The paper's primary contribution is a open sourced, flexible and easy-to-use toolbox for rapid and repeatable RFML experimentation. First, its unified architecture connects MATLAB-based waveform synthesis, configurable impairments, stochastic and deterministic channel modeling, dataset management, PyTorch-based training, inference, and visualization. Second, it provides interchangeable input paths for user-supplied Sionna/Mitsuba digital twins, complex channel responses stored in MATLAB or NumPy files, and recorded I/Q data represented with the Signal Metadata Format (SigMF), while preserving provenance across the workflow. Third, the paper shows how these components can be combined without rebuilding the surrounding data pipeline, through a live end-to-end demonstration that moves from waveform synthesis and channel augmentation to training and to evaluation on field recordings. The bundled University of Texas at Austin (UT Austin) scene, an independently developed HCRO scene, and channel estimates from the channel-measurement-augmented training (CMAT) pipeline \cite{cmat} serve as example inputs which can be swapped and extended as preferred by users of the tool kit.
+The paper's primary contribution is an open-source, flexible, and easy-to-use toolbox for rapid and repeatable RFML experimentation. First, its unified architecture connects MATLAB-based waveform synthesis, configurable impairments, stochastic and deterministic channel modeling, dataset management, PyTorch-based training, inference, and visualization. Second, it provides interchangeable input paths for user-supplied Sionna/Mitsuba digital twins, complex channel responses stored in MATLAB or NumPy files, and recorded in-phase and quadrature (I/Q) data represented with the Signal Metadata Format (SigMF), with all inputs handled through a unified data-management workflow. Third, a live demonstration at the workshop will show how the toolbox operates in practice, allowing participants to move through the end-to-end workflow from waveform synthesis and channel augmentation to small-scale training and single-waveform inference. The bundled University of Texas at Austin (UT Austin) and HCRO scenes, together with channel estimates from the channel-measurement-augmented training (CMAT) pipeline \cite{cmat}, will serve as examples that users can exchange and extend.
 
-\section{Background and Motivation}
+
+\section{Background, Related Work, and Motivation}
 \label{sec:background}
 
-Deep neural networks can learn modulation-dependent structure directly from time-domain I/Q samples, but their performance depends on the distribution represented during training. Prior over-the-air studies have shown that multipath, carrier-frequency offset, symbol-rate variation, and other acquisition effects can change classification performance materially \cite{oshea2018}. These factors are not nuisance variables in a spectrum-sharing setting. A sensing receiver may move, observe an emitter through a previously unseen path, or operate near a protected service whose interference environment changes with location and time.
+Deep neural networks can learn modulation-dependent structure directly from time-domain I/Q samples, but their performance depends on the propagation and acquisition conditions represented during training. In field deployments, received signals vary with transmitter--receiver geometry, multipath, fading, noise, carrier-frequency offset, and receiver effects. Prior over-the-air studies have shown that these differences can materially affect classification performance \cite{oshea2018}. A model trained only on idealized waveforms or a narrow set of channel conditions may therefore perform poorly at a new location or under previously unseen propagation conditions. Robust RFML development requires training data that represents both general channel variation and the site-specific conditions relevant to deployment.
 
-Channel augmentation provides a structured means of introducing propagation variation before field data are available. Stochastic models can generate many channel realizations efficiently, whereas deterministic ray tracing connects propagation paths to a specific three-dimensional geometry. Sionna RT provides hardware-accelerated computation of path coefficients, delays, angles, and channel responses for configured scenes, antenna arrays, and transmitter--receiver locations \cite{sionnart}. Imported channel responses and field recordings provide complementary, observation-based inputs. None of these paths is tied to one site: scene and channel assets are selected by the operator, passed through common downstream data and learning components, and retained with the generated data. This interchangeability allows a researcher to begin with inexpensive stochastic tests, introduce a site-specific digital twin or measured channel when available, and evaluate the resulting model on field data without rebuilding the experiment. Ray-tracing fidelity nevertheless depends on the geometry, material assignments, antenna models, and solver configuration, while measured inputs depend on their calibration and metadata. Fig.~\ref{fig:architecture} summarizes the resulting data paths.
+Three complementary channel-augmentation approaches can introduce this variation without collecting and labeling every waveform class under every condition. Stochastic models efficiently generate many statistically varied channel realizations. Ray tracing (RT) computes channels from three-dimensional scene geometry, material properties, antenna configurations, and transmitter--receiver locations. And channel banks acquired from real-world measurements can be reused and applied new datasets. All three approaches can augment synthetic datasets, and ray-traced and measured channels further allow researchers to investigate particular locations using either a digital twin or propagation observed at the site. Together, these approaches broaden the channel conditions represented during training and reduce dependence on large site-specific waveform collections, although their accuracy still depends on model fidelity, scene quality, measurement calibration, and supporting metadata.
+
+Existing open-source systems address many discrete parts of this workflow. Sionna provides GPU-accelerated link-level simulation and native neural-network integration, while Sionna RT extends it with differentiable geometry-based propagation modeling \cite{sionna,sionnart}. TorchSig provides RFML dataset generation, signal transforms, and domain-specific augmentation in PyTorch \cite{torchsig}, and HermesPy combines link-level simulation with software-defined-radio verification through a Python interface \cite{hermespy}. The presented toolbox fills the remaining integration gap by placing configurable impairments and the three channel-augmentation approaches behind a common user-facing interface. It connects Python- and MATLAB-based waveform generation, site-specific digital twins, measured-response banks, recorded I/Q data, dataset organization, model training, and single-example inference through a unified workflow. Fig.~\ref{fig} summarizes these data paths.
 
 \begin{figure*}[!t]
   \centering
   \IfFileExists{Diagram.png}{%
-    \includegraphics[width=0.96\textwidth]{Diagram.png}}{%
+    \includegraphics[width=0.90\textwidth]{Diagram.png}}{%
     \placeholder{1.70in}{\textbf{Architecture figure placeholder.} Waveform generation, channel augmentation, digital-twin and measured-channel inputs, dataset management, training, and evaluation.}}
-  \caption{Toolbox architecture. A unified waveform backbone provides consistent control across the generation, visualization, channel-augmentation, and model-training pipelines. Synthetic and recorded I/Q data share common data and metadata interfaces, and each processing step retains provenance.}
+  \caption{Toolbox architecture. A unified waveform backbone provides consistent control across the generation, visualization, channel-augmentation, and model-training pipelines. Synthetic and recorded I/Q data share common data and metadata interfaces for consistency across operations. }
   \label{fig:architecture}
 \end{figure*}
 
-\section{Toolbox Architecture}
+\section{Toolbox Workflow}
 \label{sec:architecture}
 
-The toolbox is implemented as a PySide6 desktop application organized around the experiment lifecycle rather than a single propagation model, waveform family, or classifier. Separate views support waveform generation, channel augmentation, and dataset visualization. Additional views support model training, inference, and evaluation. A shared dataset manager transfers samples and metadata between these views so that an operator can perform a complete experiment without assembling separate conversion and orchestration scripts. MATLAB supplies the waveform-generation routines. NumPy and SciPy support signal processing, PyTorch and TensorFlow support learning, and Sionna provides ray tracing.
-
+The toolbox is implemented as a PySide6 desktop application organized around the experiment lifecycle rather than a single propagation model, waveform family, or classifier. Separate views support waveform generation, channel augmentation, dataset visualization, model training, and inference. A shared dataset manager transfers samples and metadata between these views so that a user can proceed step by step through a complete experiment without assembling separate conversion and orchestration scripts. MATLAB supplies most waveform-generation routines. NumPy and SciPy support signal processing, PyTorch supports model training, and Sionna RT provides the ray-tracing backend. The figures in this section illustrate the implemented workflow through a simple classifier trained on simulated waveforms augmented with ray-traced channels from the HCRO digital twin and then applied to data collected onsite at HCRO.
 \subsection{Waveform Synthesis and Inspection}
 
-The waveform generator accepts the sampling frequency $f_s$, carrier frequency $f_c$, symbol period $T_s$, modulation order $M$, number of symbols, pulse shape, roll-off factor, and output representation. Thirteen selectable families are implemented: pulse-amplitude modulation (PAM), quadrature-amplitude modulation (QAM), phase-shift keying (PSK), frequency-shift keying (FSK), frequency-hopping spread spectrum (FHSS), linear frequency modulation (LFM), Barker-coded pulses, frequency-modulated continuous wave (FMCW), Wi-Fi, Long Term Evolution (LTE), fifth-generation New Radio (5G~NR), IEEE~802.15.4 offset quadrature phase-shift keying (Zigbee), and chirp spread spectrum (LoRa). PAM, QAM, and PSK also return the underlying symbols for constellation inspection. The interface displays time-domain, spectral, constellation, and spectrogram views before a sample is stored.
+The waveform generator accepts the sampling frequency $f_s$, carrier frequency $f_c$, symbol period $T_s$, modulation order $M$, number of symbols, pulse shape, roll-off factor, and output representation. Thirteen selectable families are implemented: pulse-amplitude modulation (PAM), quadrature-amplitude modulation (QAM), phase-shift keying (PSK), frequency-shift keying (FSK), frequency-hopping spread spectrum (FHSS), linear frequency modulation (LFM), Barker-coded pulses, frequency-modulated continuous wave (FMCW), Wi-Fi, Long Term Evolution (LTE), fifth-generation New Radio (5G~NR), IEEE~802.15.4 (Zigbee), and long range (LoRa) chirp spread spectrum. PAM, QAM, and PSK also return the underlying symbols for constellation inspection. The interface displays time-domain, frequency domain, and constellation views before a sample is stored.
 
-All thirteen selections call a single MATLAB dispatcher through the MATLAB Engine for Python. The dispatcher returns exactly $N=N_{\mathrm{sym}}\operatorname{round}(f_sT_s)$ samples. PAM, QAM, and PSK use the selected root-raised-cosine (RRC) or rectangular pulse shape. The remaining families bypass that filter and use the constructions in Table~\ref{tab:waveforms}. Native-rate standards waveforms are resampled to $f_s$ where required and then fitted to $N$: a frame shorter than $N$ is repeated, and a longer one is clipped at a randomly chosen offset so that repeated calls do not return the same deterministic preamble. Each family can be returned as complex baseband or converted to a real passband signal by quadrature upconversion at $f_c$; complex baseband is the default, since both the stochastic and ray-traced channel paths require it.
+All thirteen selections are reached through a single dispatcher, which calls MATLAB through the MATLAB Engine for Python for every family except LoRa, whose chirps are computed directly. The dispatcher returns exactly $N=N_{\mathrm{sym}}\operatorname{round}(f_sT_s)$ samples. PAM, QAM, and PSK use the selected root-raised-cosine (RRC) or rectangular pulse shape. The remaining families bypass that filter and use the constructions in Table~\ref{tab:waveforms}. Standard-based waveforms are resampled to $f_s$ where required and then fitted to $N$. A frame shorter than $N$ is repeated, and a longer one is clipped at a randomly chosen offset so that repeated calls do not return the same deterministic preamble. Each family can be returned as complex baseband or converted to a real passband signal by quadrature upconversion at $f_c$. Complex baseband is the default, since both the stochastic and ray-traced channel paths require it.
 
-\begin{table*}[!t]
+\begin{table*}[t]
 \centering
-\caption{Waveform implementations used by the toolbox.}
+\caption{Waveform families and their implementations. Rows above the rule use parameterized primitives; rows below it use fixed standards-inspired profiles or the local LoRa generator.}
 \label{tab:waveforms}
-\footnotesize
+\scriptsize
 \begin{tabularx}{\textwidth}{@{}p{0.082\textwidth}p{0.21\textwidth}X p{0.213\textwidth}@{}}
 \toprule
-Family & MATLAB primitive & Construction & Parameters used \\
+Family & Implementation & Construction & Parameters used \\
 \midrule
-PAM & \texttt{pammod}, \texttt{rcosdesign}, \texttt{upfirdn} & Unit-power random symbols with RRC or rectangular shaping. & $M$, roll-off, span, and pulse shape. \\
-QAM & \texttt{qammod}, \texttt{rcosdesign}, \texttt{upfirdn} & Unit-power random symbols with RRC or rectangular shaping. & $M$, roll-off, span, and pulse shape. \\
-PSK & \texttt{pskmod}, \texttt{rcosdesign}, \texttt{upfirdn} & Gray-coded symbols with RRC or rectangular shaping. & $M$, roll-off, span, and pulse shape. \\
-FSK & Local continuous-phase generator & One orthogonal tone per symbol with phase continuity. & $M$; spacing $1/T_s$. \\
+PAM & \texttt{pammod}, \texttt{rcosdesign}, \texttt{upfirdn} & Gray-mapped random symbols at unit average power, with RRC or rectangular shaping. & $M$, roll-off, span, and pulse shape. \\
+QAM & \texttt{qammod}, \texttt{rcosdesign}, \texttt{upfirdn} & Gray-mapped random symbols at unit average power, with RRC or rectangular shaping. & $M$, roll-off, span, and pulse shape. \\
+PSK & \texttt{pskmod}, \texttt{rcosdesign}, \texttt{upfirdn} & Gray-mapped constant-modulus symbols with RRC or rectangular shaping. & $M$, roll-off, span, and pulse shape. \\
+FSK & Local continuous-phase generator & Constant-envelope CPFSK with one orthogonal tone per symbol. & $M$; tone spacing $1/T_s$. \\
 FHSS & Local continuous-phase generator & One random hop per $T_s$ with phase continuity. & $M$ hops; spacing $f_s/(2M)$. \\
 LFM & \texttt{phased.}\allowbreak\texttt{LinearFMWaveform} & Pulsed linear chirp. & Bandwidth $Mf_s/8$; width up to $20T_s$. \\
 Barker & \texttt{phased.}\allowbreak\texttt{PhaseCoded}\allowbreak\texttt{Waveform} & Barker-coded pulse. & $M$ selects the nearest valid Barker length. \\
 FMCW & \texttt{phased.}\allowbreak\texttt{FMCWWaveform} & Triangular continuous-wave sweep. & Bandwidth $Mf_s/8$; sweep up to $50T_s$. \\
+\midrule
 Wi-Fi & \texttt{wlanWaveform}\allowbreak\texttt{Generator} & Random payload in a high-efficiency single-user packet, then resampled. & Fixed 20-MHz channel; modulation/coding index~0. \\
-LTE & \texttt{lteRMCDL}\allowbreak\texttt{Tool} & R.9 downlink reference-measurement waveform; natively 30.72~Msps. & Fixed R.9 profile; 20~MHz, 100 resource blocks. \\
-5G NR & \texttt{nrWaveform}\allowbreak\texttt{Generator} & Downlink carrier with grid, bandwidth part, and PDSCH allocation widened to fill the carrier; natively 30.72~Msps. & Fixed 20-MHz FR1 profile; 106 resource blocks, 10 subframes. \\
-Zigbee & \texttt{lrwpanWaveform}\allowbreak\texttt{Generator} & IEEE~802.15.4 O-QPSK PHY with half-sine chip shaping, then resampled. & Fixed 2450-MHz band; 2~Mchip/s. \\
-LoRa & Local chirp-spread\allowbreak-spectrum generator & Preamble, sync word, and quarter-symbol SFD followed by cyclically shifted payload chirps with analytic phase continuity. & $M$ selects the spreading factor (7--12); $T_s$ sets the oversampling factor and hence the chirp bandwidth. \\
+LTE & \texttt{lteRMCDL}\allowbreak\texttt{Tool} & R.9 downlink reference-measurement channel; natively 30.72~Msps. & Fixed R.9 profile; 15-kHz subcarrier spacing, 100 resource blocks in a 20-MHz channel, and 10 subframes. \\
+5G~NR & \texttt{nrWaveform}\allowbreak\texttt{Generator} & Downlink carrier with a full-carrier physical downlink shared channel allocation, then resampled. & Fixed 20-MHz frequency range 1 profile; 15-kHz subcarrier spacing ($\mu=0$), 106 resource blocks, and 10 subframes. \\
+Zigbee & \texttt{lrwpanWaveform}\allowbreak\texttt{Generator} & IEEE~802.15.4 O-QPSK physical layer with half-sine chip shaping, then resampled. & Fixed 2.4-GHz PHY; 2~Mchip/s. \\
+LoRa & Local chirp-spread\allowbreak-spectrum generator & Preamble, sync word, and quarter-symbol start-of-frame delimiter followed by cyclically shifted payload chirps with analytic phase continuity. & $M$ selects the spreading factor (7--12); $T_s$ sets the oversampling factor and hence the chirp bandwidth. \\
 \bottomrule
 \end{tabularx}
 \end{table*}
@@ -110,104 +112,99 @@ The linear-modulation functions use Communications Toolbox and Signal Processing
 
 \subsection{Channel Augmentation}
 
-Four channel paths expose different levels of propagation detail. The first applies additive white Gaussian noise (AWGN), scalar amplitude and phase changes, and carrier-frequency offset. The second applies a stochastic tapped-delay-line channel with a configurable profile, delay spread, SNR, and random seed. The third obtains time-domain channel taps from Sionna RT after loading an operator-selected scene and specifying transmitter and receiver positions, antenna arrays, center frequency, sampling rate, and propagation-solver parameters. The fourth draws from a bank of imported channel responses: files are loaded into a list of impulse responses, and either a selected entry or a randomly drawn one is applied. Any of the four can be applied to a single dataset for inspection or swept across an entire dataset folder in one pass. In the latter case each file draws its own parameters, seed, and---for the measured bank---its own channel from a generator seeded once per run, so a sweep varies per example while remaining reproducible from that seed.
+The channel-augmentation view provides four interchangeable options that cover common needs while allowing researchers to incorporate their own channel data. The first applies additive white Gaussian noise (AWGN), scalar amplitude and phase changes, and carrier-frequency offset. The second applies a stochastic tapped-delay-line channel with a configurable profile, delay spread, SNR, and random seed. The third computes channel taps with Sionna RT using a user-selected scene, transmitter and receiver positions, antenna arrays, center frequency, sampling rate, and propagation-solver parameters. The fourth applies a selected or randomly drawn channel response from an imported bank, allowing measured, precomputed, or otherwise user-supplied channels to enter the same workflow. Any option can be applied to a single waveform for inspection or across an entire dataset folder. During a dataset augmentation run, each example receives its own parameters and, where applicable, its own channel response from a generator initialized with one run-level seed, providing variation while preserving reproducibility.
 
-For a discrete-time multiple-input multiple-output channel, the received sample at antenna $r$ is represented as
+
+For the static multipath channels used in the current implementation,
+augmentation is performed by discrete-time convolution between each transmitted
+stream and its corresponding channel impulse response, followed by additive
+receiver noise. For a multiple-input multiple-output channel, the received
+sample at antenna $r$ is
 \begin{equation}
-y_r[n] = \sum_{t=1}^{N_{\mathrm{tx}}}\sum_{\ell=0}^{L-1}
-h_{r,t}[n,\ell]x_t[n-\ell] + w_r[n],
+y_r[n] =
+\sum_{t=1}^{N_{\mathrm{tx}}}
+\sum_{\ell=0}^{L-1}
+h_{r,t}[\ell]x_t[n-\ell] + w_r[n],
 \label{eq:mimo-channel}
 \end{equation}
-where $h_{r,t}[n,\ell]$ is the channel tap from transmit antenna $t$ to receive antenna $r$, and $w_r[n]$ is receiver noise. For a static scene and stationary endpoints, the tap sequence is time invariant over one generated example. The current implementation normalizes the input waveform to unit average power, applies the configured transmit power, pads or truncates it to the requested length, evaluates the Sionna time-domain channel, adds noise at the configured level, and returns a selected receive-antenna stream as complex I/Q.
+where $h_{r,t}[\ell]$ is the $L$-tap channel impulse response from transmit
+antenna $t$ to receive antenna $r$, and $w_r[n]$ is additive receiver noise.
+The channel taps remain fixed over one generated example.
+Fig.~\ref{fig:workflow}(a) shows the Sionna RT interface implemented in the toolbox. Transmitter and receiver positions may be entered as coordinates or selected by clicking the rendered geometry. In the latter case, the interface ray-casts onto the scene surface. The experiment configuration records the Sionna version, maximum interaction depth, enabled propagation mechanisms, ray sample count, antenna pattern, array dimensions, and tap interval.
 
-The ray-tracing view reports the loaded scene, computed paths, and channel-tap status and supports visual comparison of clean and augmented waveforms, as shown in Fig.~\ref{fig:rt}. Transmitter and receiver positions may be entered as coordinates or placed by clicking on the rendered geometry, which ray-casts onto the scene surface. The experiment configuration records the Sionna version, maximum interaction depth, enabled propagation mechanisms, ray sample count, antenna pattern, array dimensions, and tap interval.
 
 \subsection{Digital-Twin Scene Import}
 \label{sec:scenes}
 
 The ray-tracing view accepts a Sionna/Mitsuba Extensible Markup Language (XML) scene together with its referenced mesh and texture assets. A scene may therefore be built in Blender or another compatible modeling workflow and loaded without changing the channel or learning components. Transmitter and receiver positions, antenna arrays, carrier frequency, and solver settings remain experiment parameters rather than properties fixed by the imported scene.
 
-The toolbox distribution includes a ready-to-run UT Austin digital twin covering approximately $0.8$~km by $0.6$~km. It combines a ground plane with OpenStreetMap-derived campus buildings assigned Sionna radio materials based on International Telecommunication Union (ITU) models and provides an urban example for configuring transmitter--receiver locations and inspecting simulated paths. Users may instead load their own Sionna/Mitsuba scene and retain the same channel and learning workflow.
+The toolbox distribution includes two ready-to-run digital twins, one for the UT Austin campus and one for HCRO. Both scenes incorporate site features derived from OpenStreetMap (OSM) data
+(\textcopyright{} OpenStreetMap contributors, available under the Open Database
+License) \cite{osm} and use Sionna radio materials based on International
+Telecommunication Union Radiocommunication Sector (ITU-R) recommendations
+\cite{itup2040}. The UT Austin scene covers approximately $0.8$~km by $0.6$~km and uses a ground plane to provide an urban campus environment for configuring transmitter--receiver locations and inspecting simulated paths. The HCRO scene covers approximately $4$~km by $2$~km and supplements the shared map-derived geometry with custom ground shaping created in Blender to represent the rugged terrain and vegetation observed onsite. For either scene, the toolbox computes complex path coefficients, delays, and angles for the transmitter--receiver geometry selected by the user. Users may also load their own Sionna/Mitsuba scenes without changing the downstream channel or learning workflow. Fig.~\ref{fig:workflow}(a) shows the HCRO digital twin loaded in the toolbox's ray-tracing view.
 
-The HCRO digital twin used in the demonstration illustrates this external-scene path. The approximately $4$~km by $2$~km scene represents the site's topography and elevation together with OpenStreetMap-derived buildings and ground surfaces assigned Sionna ITU materials. It is an NRDZ-relevant example rather than a required toolbox asset. For either scene, the resulting path data include complex coefficients, delays, and angles for the transmitter--receiver geometry selected by the operator. Fig.~\ref{fig:rt} shows the HCRO scene loaded in the ray-tracing view.
-
-\begin{figure}[!t]
+\begin{figure*}[!t]
   \centering
-  % SCREENSHOT 1 of 3 --- Ray-tracing view.  Wanted: the HCRO scene rendered in
-  % the 3D viewport with the TX/RX pair placed and the traced paths drawn, and
-  % enough of the left-hand control panel visible to show the scene picker and
-  % the solver settings.
-  \IfFileExists{RT.png}{%
-    \includegraphics[width=\columnwidth]{RT.png}}{%
-    \placeholder{1.45in}{\textbf{Screenshot 1 (needed): ray-tracing view.} HCRO scene in the 3D viewport with the placed transmitter--receiver pair, the traced propagation paths, and the scene/solver controls.}}
-  \caption{Ray-tracing view with the imported HCRO scene, a placed transmitter--receiver pair, and the resulting propagation paths. The same view applies any bundled or user-supplied scene.}
-  \label{fig:rt}
-\end{figure}
+  \begin{minipage}[t]{0.475\textwidth}
+    \centering
+    \IfFileExists{RT.png}{\includegraphics[width=\linewidth]{RT.png}}{\placeholder{1.20in}{HCRO ray-tracing view.}}
+    \small (a) HCRO ray tracing with click-placed transmitter and receiver.
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.475\textwidth}
+    \centering
+    \IfFileExists{training.png}{\includegraphics[width=\linewidth]{training.png}}{\placeholder{1.35in}{Training view with settings and learning curves.}}
+    \small (b) Small three-class run using synthetic examples augmented from the HCRO CMAT bank.
+  \end{minipage}
+  \caption{Completed HCRO-related runs used in the workflow walkthrough: (a) site-specific ray tracing and (b) small-scale training.}
+  \label{fig:workflow}
+\end{figure*}
 
 \subsection{External Channel and Recording Import}
 \label{sec:channel-import}
 
-The external-channel interface accepts a single file, directory tree, or archive containing user-supplied channel assets. MATLAB inputs may contain a one-dimensional complex impulse response or frequency response. NumPy inputs may use the same representation or an $N\times2$ array whose columns store I and Q. The import configuration identifies the array variable, response domain, sample rate for an impulse response, frequency spacing or occupied bandwidth for a frequency response, center frequency when applicable, channel identifier, and normalization or calibration convention. Accepted arrays are converted to complex single precision, aligned with the waveform grid, and stored with their import metadata.
+The external-channel interface accepts a single file or a directory of user-supplied channel assets. MATLAB inputs may contain a one-dimensional complex impulse response or frequency response. NumPy inputs may use the same representation or an $N\times2$ array whose columns store I and Q. The import configuration identifies the array variable, response domain, sample rate for an impulse response, frequency spacing or occupied bandwidth for a frequency response, center frequency when applicable, channel identifier, and normalization or calibration convention. Accepted arrays are converted to complex single precision, aligned with the waveform grid, and stored with their import metadata.
 
-Recorded I/Q data may also be imported as a SigMF Recording comprising a \texttt{.sigmf-data} file and its \texttt{.sigmf-meta} description \cite{sigmf}. A supported complex datatype and \texttt{core:sample\_rate} are required; capture frequency, class labels, and valid sample regions are read from capture and annotation metadata when available. To bound memory use and preserve local signal structure, each imported example is limited to the shorter of a configurable 10-ms window and $10^6$ complex samples. Longer recordings are segmented into successive windows. Shorter regions retain their original length and are padded only when required by the selected model. SigMF recordings are treated as observed I/Q for training or evaluation, not as channel responses unless a channel estimate has been derived separately.
+The fourth option allows users to import pre-extracted channel responses and apply them to generated waveforms through a common interface. The CMAT collection used in the demonstration is one example of this workflow \cite{cmat}. Its channel responses were estimated from measurements collected at HCRO, allowing synthetic waveforms to be convolved with propagation observed at the site rather than with a simulated model. The toolbox aligns the selected response with the waveform, performs the discrete convolution, adds receiver noise at the requested SNR, and records the channel source and processing configuration in the output metadata. Implementation and channel-estimation details are available in the CMAT repository \cite{cmatrepo}.
 
-The CMAT collection used in the demonstration is one example of this general interface \cite{cmat}. The training pipeline uses 308 \texttt{chanEst\_*.mat} files, each storing a 1,200-bin complex frequency response under \texttt{chanEstCurrent}. A selected response is aligned with the generated waveform and applied to produce \texttt{augmented\_data}. Let $X[k]$ denote the discrete Fourier transform of a clean waveform and let $H_m[k]$ denote imported channel $m$ after frequency-grid alignment. The augmented waveform is
-\begin{equation}
-y_m[n] = \operatorname{IDFT}\!\left\{X[k]H_m[k]\right\} + w[n],
-\label{eq:cmat}
-\end{equation}
-where $\operatorname{IDFT}\{\cdot\}$ denotes the inverse discrete Fourier transform and $w[n]$ sets the requested post-channel SNR. The output retains the source filename, collection identifier, frequency-grid parameters, alignment operation, normalization choice, and random seed in its metadata. This provenance permits all examples derived from one measured channel to remain in the same data partition.
+Recorded I/Q data may also be imported as a SigMF Recording comprising a \texttt{.sigmf-data} file and its \texttt{.sigmf-meta} description \cite{sigmf}. A supported complex datatype and \texttt{core:sample\_rate} are required; capture frequency, class labels, and valid sample regions are read from capture and annotation metadata when available. Imported regions retain their original length and are padded only when required by the selected model. SigMF recordings are treated as observed I/Q rather than as channel responses, unless a channel estimate has been derived separately.
+
 
 \subsection{Dataset and Learning Components}
 
-Generated and augmented signals are stored as NumPy arrays with JavaScript Object Notation (JSON) metadata. The metadata record includes the signal class and generation parameters; augmented examples additionally record the selected augmentation and its configuration. The learning view discovers labeled examples, forms training and validation partitions, and trains one of four PyTorch architectures. The standard one-dimensional convolutional neural network (1-D CNN) contains 16- and 32-filter convolutional stages, while the compact 1-D CNN contains a single 8-filter stage; both use max pooling and adaptive average pooling before classification. These toolbox-specific baselines follow the general convolutional-network design of local receptive fields and shared weights \cite{lecun1998}. The multilayer perceptron (MLP) contains hidden layers of 256 and 128 units and provides a feedforward baseline \cite{rumelhart1986}. The one-dimensional residual network (1-D ResNet) uses an initial convolution followed by six two-convolution residual blocks at widths 64, 128, and 256 and global average pooling. It adapts residual skip connections to I/Q sequences rather than reproducing a published ResNet configuration \cite{he2016}. Input width is selected from the data rather than the architecture: a complex baseband example is presented as two real channels holding I and Q, and a real passband example as one, so any of the four models can be trained on either representation.
+Generated and augmented signals are stored as NumPy arrays with JavaScript Object Notation (JSON) metadata. The metadata record includes the signal class and generation parameters. Augmented examples additionally record the selected augmentation and its configuration. The learning view discovers labeled examples, forms training and validation partitions, and provides four PyTorch architectures. The standard one-dimensional convolutional neural network (1-D CNN) contains 16- and 32-filter convolutional stages, while the compact 1-D CNN contains a single 8-filter stage, both use max pooling and adaptive average pooling before classification. The multilayer perceptron (MLP) contains hidden layers of 256 and 128 units and provides a feedforward baseline. The one-dimensional residual network (1-D ResNet) uses an initial convolution followed by six two-convolution residual blocks at widths 64, 128, and 256 and global average pooling. It adapts residual skip connections to one-dimensional signal sequences rather than reproducing the published ResNet configuration \cite{he2016}.
 
-Samples are padded or truncated to a fixed length before training, and each example is power-normalized so that absolute scale does not distinguish classes. A saved model carries a metadata sidecar recording its class labels, input width, signal length, hyperparameters, and the directories its training data came from, so two models that differ only in their channel condition remain distinguishable afterwards. The training view reports learning curves as the model converges (Fig.~\ref{fig:train}), and the evaluation view reports accuracy, per-class metrics, confusion matrices, classification reports, receiver-operating-characteristic curves, and low-dimensional dataset visualization (Fig.~\ref{fig:eval}).
-
-\begin{figure}[!t]
-  \centering
-  % SCREENSHOT 2 of 3 --- Training view.  Wanted: the loaded class list, the
-  % hyperparameter panel, and the training/validation loss and accuracy curves
-  % after a completed run.
-  \IfFileExists{training.png}{%
-    \includegraphics[width=\columnwidth]{training.png}}{%
-    \placeholder{1.35in}{\textbf{Screenshot 2 (needed): training view.} Loaded classes, hyperparameters, and training/validation loss and accuracy curves for a completed run.}}
-  \caption{Training view during a run, showing the loaded classes, the training configuration, and the learning curves.}
-  \label{fig:train}
-\end{figure}
+Samples are padded or truncated to a fixed length before training, and each example is power-normalized so that absolute scale does not distinguish classes. A saved model carries metadata in its class labels, signal length, hyperparameters, and source directories. The training view reports learning curves for a completed small-scale run (Fig.~\ref{fig:workflow}(b)). The inference view loads a saved model, accepts a freshly generated waveform or one recording imported from disk, reports the predicted class and confidence, and displays the selected example in time and frequency. Fig.~\ref{fig:inference} shows this path applied to one onsite HCRO recording.
 
 \begin{figure}[!t]
   \centering
-  % SCREENSHOT 3 of 3 --- Evaluation view.  Wanted: a confusion matrix over the
-  % held-out captures plus the per-class metric readout beside it.
-  \IfFileExists{eval.png}{%
-    \includegraphics[width=\columnwidth]{eval.png}}{%
-    \placeholder{1.35in}{\textbf{Screenshot 3 (needed): evaluation view.} Confusion matrix and per-class metrics for a model scored on imported field recordings.}}
-  \caption{Evaluation view reporting a confusion matrix and per-class metrics for a trained model scored on imported field recordings.}
-  \label{fig:eval}
+  \IfFileExists{eval.png}{\includegraphics[width=\columnwidth]{eval.png}}{\placeholder{1.35in}{Single-waveform inference view.}}
+  \caption{Single-waveform inference on one 5G~NR recording collected onsite at HCRO. The screenshot demonstrates the implemented inference path rather than aggregate field performance.}
+  \label{fig:inference}
 \end{figure}
+
 
 \section{Live Demonstration}
 \label{sec:demo}
 
-The live demonstration shows how an operator uses the toolbox from end to end. It is organized as a two-stage walkthrough---data generation and training, followed by field-data evaluation and visualization---and is intended to make the integrated workflow concrete rather than serve as the paper's primary contribution.
+The proposed live demonstration will show how a participant uses the toolbox from end to end. It is organized as a two-stage walkthrough (interactive waveform generation, channel augmentation, and small-scale training, followed by single-waveform inference) and is intended to make the integrated workflow concrete. The individual steps described below are illustrated in Figs.~\ref{fig:workflow} and~\ref{fig:inference}; the demonstration performs them in sequence, live, on the exhibition floor.
 
-\textit{Stage 1---Data generation and training:} The imported HCRO scene is loaded in the channel view, and a transmitter--receiver geometry is selected. The toolbox computes the propagation paths and channel taps and displays the scene together with the clean and channel-augmented signals. Labeled examples are generated in batches for the selected classes; clean copies and copies carried through the stochastic, ray-traced, and measured-channel paths form the training conditions. The training view applies the same compact PyTorch configuration to each condition and displays training and validation loss and accuracy as the models converge. The resulting models and class-label metadata are saved and transferred directly to the inference views.
+\textit{Stage 1---Interactive generation, augmentation, and training:} A participant selects a waveform family and one of four channel paths: AWGN and configurable impairments, a stochastic channel, ray tracing, or a pre-extracted CMAT channel response. For ray tracing, the participant may also choose a scene and radio node placement. The toolbox generates a small labeled batch, applies the selected augmentation, and displays clean and augmented examples. A compact model is then trained on this small dataset so that the configuration and learning curves can be inspected during the session. Prepared checkpoints remain available if runtime prevents the training run from completing live.
 
-\textit{Stage 2---On-stage evaluation and visualization:} Known sequences are transmitted and recorded at stage with an Ettus USRP X410. The acquisition records the complex I/Q stream together with center frequency, sample rate, transmit and receive gains, timestamp, radio configuration, and valid labeled regions in SigMF metadata. The toolbox imports and presents the recordings through its graphical interface, then applies the models from Stage~1 or other pretrained model of choice. Aside from accuracy, the inference view can additionally display per-class metrics, confusion matrix, and receiver-operating-characteristic curves.  The same workflow can be repeated with different waveform families, channel sources, scenes, learning models, or field recordings. Fig.~\ref{fig:demo} summarizes the two demonstration stages. \todo{HCRO campaign date and geometry; X410 center frequency, sample rate, waveform scaling, transmit/receive gains, capture duration and framing, synchronization procedure, and number of labeled windows.}
+\textit{Stage 2---Single-waveform inference:} The trained or prepared model is applied to one generated or imported waveform. Where venue rules and hardware setup permit, an Ettus Universal Software Radio Peripheral (USRP) X410 supplies a live recording. Otherwise, cable transmission or prerecorded waveforms serve as a fallback. The interface displays the selected waveform together with its predicted class and confidence. The emphasis is the ability to move through the workflow and exchange its inputs, not the accuracy of one prediction.
 
 
 \section{Limitations}
 \label{sec:limitations}
 
-Several limitations bound the present results. First, the standards-inspired waveform generators represent selected Wi-Fi, LTE, and 5G NR configurations rather than exhaustive implementations of those standards. Second, ray-tracing accuracy depends on scene geometry, radio-material properties, antenna models, and solver settings. Third, a static channel response does not reproduce mobility, long-term time variation, oscillator drift, nonlinear front-end effects, cochannel interference, or a complete receiver link budget. External responses require correct domain, rate or frequency-grid, and calibration metadata. SigMF imports represent recorded observations rather than channel responses unless an estimator is supplied, and windowing may omit behavior at longer time scales. Fourth, a ray-traced condition built from a single transmitter--receiver geometry supplies one channel realization for every generated example, whereas the stochastic and measured-bank paths draw a new channel per example; comparing them without accounting for this confounds propagation realism with channel diversity. Finally, the software supports classifier development and analysis but does not implement spectrum-policy decisions or automatic control of emitters.
+Several limitations bound the present implementation. First, the standards-inspired waveform generators represent selected Wi-Fi, LTE, and 5G~NR configurations rather than exhaustive implementations of those standards. Second, ray-tracing accuracy depends on scene geometry, radio-material properties, antenna models, and solver settings. Third, a static channel response does not reproduce mobility, long-term time variation, oscillator drift, nonlinear front-end effects, cochannel interference, or a complete receiver link budget. External responses also require appropriate domain, sampling-rate or frequency-grid, and calibration metadata.
 
-Near-term work includes expanding measurement metadata, sweeping several ray-traced geometries so that path carries per-example channel diversity comparable to the stochastic and measured banks, validating simulated channels against site data, adding interference-composition experiments, and exploring out-of-distribution detection, finetuning, and continual learning on the platform. 
+Near-term work will focus on further implementing and systematically testing these capabilities while making the toolbox more flexible across waveform sources, channel representations, scene configurations, and learning tasks. This effort will include improving metadata handling, validating simulated channels against site measurements, broadening support for imported data and channel models, and refining the interfaces through which new components are incorporated into the workflow.
 
 \section{Conclusion}
 \label{sec:conclusion}
 
-This paper presented a flexible, operator-facing RFML toolbox that connects parameterized waveform synthesis, channel augmentation, dataset provenance, model training, inference, evaluation, and visualization. Its primary contribution is a reusable end-to-end workflow in which researchers can exchange digital twins, stochastic models, measured channel responses, recorded I/Q data, and learning architectures without rebuilding the surrounding experiment. The bundled UT Austin scene and the imported HCRO and CMAT assets illustrate this flexibility without making any one site or dataset a dependency. The live demonstration shows how an operator moves from data generation and channel augmentation through training to evaluation of onsite recordings, providing evidence of the flexibility of the workflow and of how it could be used in other projects. By reducing the integration work between signal, channel, learning, and analysis components while retaining experiment metadata, the toolbox is intended to support faster, more repeatable RFML studies for dynamic-spectrum and spectrum-coexistence research. The software is released at \url{https://github.com/yliyli/RFML-Toolkit}.
+This paper presents a flexible, user-facing RFML toolbox that connects parameterized waveform synthesis, channel augmentation, dataset management, model training, inference, and visualization. Its primary contribution is an open-source, end-to-end workflow in which researchers can exchange digital twins, stochastic models, measured channel responses, recorded I/Q data, and learning architectures without rebuilding the surrounding pipeline. The bundled UT Austin and HCRO scenes and the imported CMAT responses illustrate this flexibility without making any one site or dataset a dependency. The HCRO-related examples (modivated by SII-NRDZ) exercise three input paths: a ray-traced digital twin, on-site estimated channel responses, and real-world captured I/Q data. The live demonstration shows how a participant can select a channel path and move from waveform generation through a small training run to single-waveform inference. By reducing the integration work between signal, channel, learning, and analysis components while retaining experiment metadata, the toolbox is intended to support faster, more repeatable RFML studies for dynamic-spectrum and spectrum-coexistence research. The software is released at \url{https://github.com/yliyli/RFML-Toolkit}.
 
 \section*{Acknowledgment}
 
@@ -230,54 +227,30 @@ S. Trudeau, S. Chun, B. Nguyen, and K. R. Chowdhury, ``Measure once, train often
 \bibitem{sionnart}
 J. Hoydis, F. A\"it Aoudia, S. Cammerer, M. Nimier-David, N. Binder, G. Marcus, and A. Keller, ``Sionna RT: Differentiable ray tracing for radio propagation modeling,'' in \emph{Proc. IEEE GLOBECOM Workshops}, 2023, pp. 317--321, doi: 10.1109/GCWkshps58843.2023.10465179.
 
+\bibitem{sionna}
+J. Hoydis, S. Cammerer, F. A\"it Aoudia, A. Vem, N. Binder, G. Marcus, and A. Keller, ``Sionna: An open-source library for next-generation physical layer research,'' arXiv:2203.11854, 2022.
+
+\bibitem{torchsig}
+L. Boegner \emph{et al.}, ``Large scale radio frequency signal classification,'' arXiv:2207.09918, 2022.
+
+\bibitem{hermespy}
+J. Adler, T. Kronauer, and A. N. Barreto, ``HermesPy: An open-source link-level evaluator for 6G,'' \emph{IEEE Access}, vol. 10, pp. 120256--120273, 2022, doi: 10.1109/ACCESS.2022.3222063.
+
+\bibitem{osm}
+OpenStreetMap contributors, ``OpenStreetMap copyright and license,'' [Online]. Available: \url{https://www.openstreetmap.org/copyright}
+
+\bibitem{itup2040}
+International Telecommunication Union, ``Effects of building materials and structures on radiowave propagation in the range of 1 MHz to 450 GHz,'' Recommendation ITU-R P.2040-4, Sept. 2025. [Online]. Available: \url{https://www.itu.int/rec/R-REC-P.2040}
+
+\bibitem{cmatrepo}
+S. Trudeau, S. Chun, B. Nguyen, and K. R. Chowdhury, ``Measure once, train often: Scaling waveform classifiers with channel-augmented data,'' GitHub repository, 2026. [Online]. Available: \url{https://github.com/Trudes808/Measure-Once-Train-Often}
+
 \bibitem{sigmf}
 The GNU Radio Foundation, Inc., ``The Signal Metadata Format (SigMF),'' version 1.2.6, 2025, doi: 10.5281/zenodo.1418396. [Online]. Available: \url{https://sigmf.org}
-
-\bibitem{lecun1998}
-Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner, ``Gradient-based learning applied to document recognition,'' \emph{Proc. IEEE}, vol. 86, no. 11, pp. 2278--2324, Nov. 1998, doi: 10.1109/5.726791.
-
-\bibitem{rumelhart1986}
-D. E. Rumelhart, G. E. Hinton, and R. J. Williams, ``Learning representations by back-propagating errors,'' \emph{Nature}, vol. 323, pp. 533--536, Oct. 1986, doi: 10.1038/323533a0.
 
 \bibitem{he2016}
 K. He, X. Zhang, S. Ren, and J. Sun, ``Deep residual learning for image recognition,'' in \emph{Proc. IEEE Conf. Computer Vision and Pattern Recognition (CVPR)}, Las Vegas, NV, USA, 2016, pp. 770--778, doi: 10.1109/CVPR.2016.90.
 
 \end{thebibliography}
-
-% -------------------------------------------------------------------------
-% CONFIRMED CONTEXT (comments only; not rendered in the submitted manuscript)
-% - Target: NRDZCOM8, Demonstrable and Deployable Spectrum Coexistence and
-%   Agility, a full-day workshop at IEEE MILCOM 2026.
-% - Format: standard IEEE conference proceedings template, US Letter, 10-point,
-%   two-column, single-spaced; the workshop draft limit is six pages.
-% - Author and affiliation fields remain placeholders for the present draft.
-% - Table I follows the current MATLAB dispatcher; no release number is claimed.
-% - The scene interface is generic. The repository bundles a roughly 0.8 km by
-%   0.6 km UT Austin scene; HCRO is an external scene used by the demonstration.
-% - The HCRO scene spans approximately 4 km by 2 km horizontally, with elevation
-%   along y and OSM-derived building/ground surfaces using Sionna ITU materials.
-% - The external-channel design covers MAT/NumPy responses and SigMF recordings;
-%   HCRO and the 308-file CMAT collection are examples rather than requirements.
-%
-% REMAINING AUTHOR INPUT
-% 1. Is NSF Award 2431961 the correct award for the UT work, or is there a UT
-%    subaward number and required acknowledgment text?
-% 2. Provide the source/license for the HCRO meshes, elevation data, and terrain
-%    texture, and the source/license for any UT Austin assets distributed.
-% 3. What frequency spacing, bandwidth, calibration convention, and collection
-%    identifier accompany the 308 files containing 1,200-bin chanEstCurrent?
-% 4. What are the held-out X410 accuracies for models trained on clean, HCRO-RT-
-%    augmented, and measured-channel-augmented data?
-% 5. Will the software and HCRO assets be public at submission? If so, provide
-%    the archival release URL/DOI and the license for code, meshes, and data.
-% 6. What are the onsite HCRO campaign date, X410 transmit/receive topology, and
-%    final SigMF capture metadata?
-% IMPLEMENTATION TODO: complete and test the generic external-channel adapters
-% described in Sec. III: MAT/NumPy domain metadata, folder/archive indexing,
-% direct SigMF parsing, 10-ms/1e6-sample window limits, and provenance output.
-% IMPLEMENTATION CHECK: the current trainer/evaluation float32 conversion appears
-% to discard the imaginary component. Verify or correct this path and add an
-% end-to-end I/Q preservation test before reporting complex-baseband results.
-% -------------------------------------------------------------------------
 
 \end{document}
