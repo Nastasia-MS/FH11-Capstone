@@ -15,3 +15,18 @@ datasets/
 
 # models folder
 models/
+
+# Paper drafts and figures — kept local, not part of the toolkit release
+*.tex
+*.pdf
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+Milcom*
+RT.png
+training.png
+eval.png
+Diagram.png
