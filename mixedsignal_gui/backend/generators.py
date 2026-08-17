@@ -22,6 +22,25 @@ class MATLABWaveformGenerator:
 
         from mixedsignal_gui.backend.core import WaveformConfig
 
+        # waveform_generator.m rounds before it does anything else — line 58 is
+        # sps = round(fs*Tsymb) — so MATLAB never errors on a fractional rate,
+        # it silently generates at the rounded symbol rate instead.  That is
+        # worth refusing, but only where it actually changes the output: the
+        # pulse shaper at line 143 is reached by PAM/QAM/PSK alone.  WiFi, LTE
+        # and 5G_NR return at lines 119-135, before sps is used at all, and the
+        # FSK/FHSS/radar sub-functions round it for themselves.  Refusing those
+        # blocked the LTE and 5G_NR presets, whose 3.84 and 30.72 MHz rates are
+        # correct for their standards, over a limit that does not apply to them.
+        if (getattr(cfg, "is_fractional_sps", False)
+                and cfg.modulation in PULSE_SHAPED_MODULATIONS):
+            raise RuntimeError(
+                f"fs x Tsymb = {cfg.sps_exact:g} samples per symbol is not a whole "
+                f"number. waveform_generator.m would round it to {cfg.sps} before "
+                f"pulse shaping, generating at a different symbol rate than the one "
+                f"requested. Adjust fs or Tsymb, or use the built-in Python "
+                f"generator, which realises fractional rates exactly by rational "
+                f"resampling.")
+
         eng = self.matlab_engine.eng
         self.last_metadata = {"generator": "matlab"}
 
@@ -77,6 +96,13 @@ _BARKER_CODES = {
     11: [+1, +1, +1, -1, -1, -1, +1, -1, -1, +1, -1],
     13: [+1, +1, +1, +1, +1, -1, -1, +1, +1, -1, +1, -1, +1],
 }
+
+#: Modulations that go through the pulse shaper — symbols upsampled by
+#: samples-per-symbol and filtered.  These are the only ones whose output
+#: depends on sps being exact: in waveform_generator.m every other family
+#: either returns before line 143 (WiFi/LTE/5G_NR) or rounds sps inside its
+#: own sub-function (FSK/FHSS/LFM/Barker/FMCW).
+PULSE_SHAPED_MODULATIONS = {"PAM", "QAM", "PSK"}
 
 #: Waveforms that are real communication standards rather than closed-form
 #: maths.  MATLAB builds genuine protocol frames for these via its WLAN /
@@ -219,19 +245,27 @@ class PythonWaveformGenerator:
 
         Phase carries across interval boundaries, which is what makes FSK/FHSS
         continuous-phase rather than a sequence of restarted tones.
+
+        ``sps`` may be fractional.  Boundaries are placed at ``round(k * sps)``
+        rather than stepped by a constant integer, so the symbol rate stays
+        exact and the intervals absorb the remainder by alternating length
+        (3.84 gives 4, 4, 3, 4, 4 ...).  Stepping by a rounded sps instead
+        would drift the symbol rate by up to 4% at the rates the LTE and 5G_NR
+        presets use, while output_len is computed exactly.
         """
         sig = np.zeros(output_len, dtype=np.complex128)
         phase = 0.0
-        idx = 0
-        for f_offset in freq_offsets:
-            n = min(sps, output_len - idx)
+        for k, f_offset in enumerate(freq_offsets):
+            idx = int(round(k * sps))
+            end = min(int(round((k + 1) * sps)), output_len)
+            n = end - idx
             if n <= 0:
-                break
+                if idx >= output_len:
+                    break
+                continue
             step = 2 * np.pi * f_offset / fs
-            phases = phase + step * np.arange(n)
-            sig[idx:idx + n] = np.exp(1j * phases)
+            sig[idx:end] = np.exp(1j * (phase + step * np.arange(n)))
             phase = (phase + step * n) % (2 * np.pi)
-            idx += n
         return sig
 
     # -- waveform families ----------------------------------------------
@@ -313,7 +347,9 @@ class PythonWaveformGenerator:
 
         self.last_metadata = {"generator": "python"}
 
-        sps = cfg.sps
+        # Exact, not cfg.sps: output_len is computed from the exact rate, so
+        # timing the symbols by a rounded one would drift them against it.
+        sps = cfg.sps_exact
         output_len = cfg.output_len
         baseband = cfg.output_type.lower() == "baseband"
 
@@ -336,20 +372,28 @@ class PythonWaveformGenerator:
         # -- linear modulations: symbols -> pulse shaping -> trim ---------
         from scipy.signal import upfirdn
 
+        # Upsample by p and decimate by q so a fractional samples-per-symbol
+        # (LTE's 3.84, say) is realised exactly.  For a whole number q is 1 and
+        # p is sps, which reduces to the plain integer path.
+        p, q = cfg.sps_ratio
+
         if cfg.pulse_shape == "rrc":
-            h = rcosdesign(cfg.alpha, cfg.span, sps)
-            filter_delay = cfg.span * sps // 2
+            # Design at the upsampled rate p, then decimation by q lands the
+            # taps at the true symbol spacing.
+            h = rcosdesign(cfg.alpha, cfg.span, p)
+            filter_delay = int(round(cfg.span * p / 2 / q))
         else:
-            h = np.ones(sps) / np.sqrt(sps)
+            h = np.ones(p) / np.sqrt(p)
             filter_delay = 0
 
-        num_symbols = int(np.ceil((output_len + 2 * filter_delay) / sps))
+        sps_exact = cfg.sps_exact
+        num_symbols = int(np.ceil((output_len + 2 * filter_delay) / sps_exact))
         symbols = self._symbols(num_symbols, cfg.M, modulation)
         self.last_metadata["baseband_symbols"] = symbols
 
         # NOTE argument order: SciPy is upfirdn(h, x, up, down); MATLAB is
         # upfirdn(x, h, p, q).  Swapping these fails silently.
-        sig_bb = upfirdn(h, symbols, up=sps, down=1)
+        sig_bb = upfirdn(h, symbols, up=p, down=q)
 
         # Trim off the filter's group delay, zero-padding if the filtered
         # signal is short (mirrors `sig_bb(end_idx) = 0` in the .m).

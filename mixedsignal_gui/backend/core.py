@@ -44,8 +44,25 @@ class WaveformConfig:
 
     def _validate(self):
         sps = self.fs * self.Tsymb
-        if abs(sps - round(sps)) > 1e-9:
-            raise ValueError("fs * Tsymb must be an integer")
+        # A non-integer samples-per-symbol used to be rejected outright, which
+        # ruled out perfectly ordinary sample rates: LTE's 3.84 MHz at a 1 us
+        # symbol gives 3.84.  The restriction came from the pulse shaper, not
+        # from the signal — upfirdn needs an integer upsampling factor — and
+        # the Python generator now handles it by rational resampling instead.
+        # MATLABWaveformGenerator still refuses, since MATLAB's upfirdn
+        # requires integer factors.
+        #
+        # One sample per symbol is still the floor, though: below that a symbol
+        # has no sample to live on.  The spin boxes reach fs=0.1 MHz with
+        # Tsymb=0.01 us (sps=0.001), which produced a 0- or 1-sample waveform
+        # with no error at all, or a bare "Invalid number of FFT data points".
+        # The old integer check happened to exclude these; requiring >= 1 is
+        # the constraint that was actually doing the work.
+        if sps < 1:
+            raise ValueError(
+                f"fs x Tsymb = {sps:g} gives less than one sample per symbol. "
+                f"Increase the sample rate or the symbol period so that "
+                f"fs x Tsymb >= 1.")
 
         if self.output_type == "passband" and self.fc >= self.fs / 2:
             raise ValueError("fc must be < fs/2")
@@ -90,8 +107,52 @@ class WaveformConfig:
         return int(round(self.fs * self.Tsymb))
 
     @property
+    def sps_exact(self) -> float:
+        """Samples per symbol without rounding, e.g. 3.84 for LTE at 1 us."""
+        return float(self.fs) * float(self.Tsymb)
+
+    #: Largest upsampling factor the pulse shaper will accept.  The RRC is
+    #: designed at ``p`` samples per symbol, so the filter is ``span*p + 1``
+    #: taps and upfirdn's intermediate signal is ``p`` times the symbol count.
+    _MAX_UPSAMPLE = 50_000
+
+    @property
+    def sps_ratio(self) -> tuple:
+        """``sps_exact`` as a fraction ``(p, q)``.
+
+        Pulse shaping upsamples by ``p`` and decimates by ``q``, so a
+        fractional samples-per-symbol is realised without rounding.
+
+        The denominator has to be bounded, because ``p`` sets both the filter
+        length and the intermediate rate.  A bound of 1000 covers every rate
+        the app ships exactly (3.84 -> 96/25, 30.72 -> 768/25), but it is not
+        exact for every rate the spin boxes can reach: they step in hundredths
+        of a MHz and of a microsecond, so ``sps`` is a multiple of 1e-4 and its
+        exact denominator can be up to 10000.  Escalating catches those —
+        1.0005 becomes 2001/2000 rather than collapsing to 1, which was a 0.05%
+        symbol-rate error, the worst case over the whole spin-box grid.
+
+        Escalation stops if ``p`` would exceed ``_MAX_UPSAMPLE``, so a
+        pathological rate degrades to a close approximation instead of building
+        a million-tap filter.  Over the full grid of reachable (fs, Tsymb)
+        pairs the residual error is then at most ~1e-9 relative.
+        """
+        from fractions import Fraction
+        v = self.sps_exact
+        frac = Fraction(v).limit_denominator(1000)
+        if abs(float(frac) - v) > 1e-12 * abs(v):
+            finer = Fraction(v).limit_denominator(10_000)
+            if finer.numerator <= self._MAX_UPSAMPLE:
+                frac = finer
+        return frac.numerator, frac.denominator
+
+    @property
+    def is_fractional_sps(self) -> bool:
+        return abs(self.sps_exact - round(self.sps_exact)) > 1e-9
+
+    @property
     def output_len(self) -> int:
-        return self.sps * self.Nsymb
+        return int(round(self.sps_exact * self.Nsymb))
 
 
 class Waveform:
@@ -140,16 +201,30 @@ class Waveform:
         MATLAB stays the reference implementation, so it wins whenever the
         engine is running.  An explicitly injected ``generator_impl`` always
         takes precedence, which is how callers and tests force one or the other.
+
+        The one exception is a fractional samples-per-symbol on a pulse-shaped
+        modulation.  waveform_generator.m rounds sps before pulse shaping, so
+        MATLAB would generate at a symbol rate the caller did not ask for; the
+        Python generator realises the rate exactly by rational resampling.  It
+        therefore wins that case on merit rather than availability, and the
+        choice stays visible because ``last_metadata`` records which engine ran.
         """
         if self._generator is not None:
             return
 
+        from mixedsignal_gui.backend.generators import (
+            MATLABWaveformGenerator, PythonWaveformGenerator,
+            PULSE_SHAPED_MODULATIONS)
+
         engine = self.matlab_engine
-        if engine is not None and getattr(engine, "is_available", lambda: False)():
-            from mixedsignal_gui.backend.generators import MATLABWaveformGenerator
+        engine_live = (engine is not None
+                       and getattr(engine, "is_available", lambda: False)())
+        prefer_python = (self.config.is_fractional_sps
+                         and self.config.modulation in PULSE_SHAPED_MODULATIONS)
+
+        if engine_live and not prefer_python:
             self._generator = MATLABWaveformGenerator(engine)
         else:
-            from mixedsignal_gui.backend.generators import PythonWaveformGenerator
             self._generator = PythonWaveformGenerator()
 
     def generate(self) -> np.ndarray:

@@ -9,6 +9,7 @@ from mixedsignal_gui.widgets.waveform_plots import PlottingWidget, FreqDomainPlo
 from mixedsignal_gui.widgets.wheel_filter import install_wheel_blocker
 from mixedsignal_gui.widgets.modulation_utils import (mark_unavailable_modulations,
                                                      selected_modulation)
+from mixedsignal_gui.backend.generators import unavailable_modulations
 import numpy as np
 from datetime import datetime
 
@@ -26,7 +27,13 @@ class QuickTestDataDialog(QDialog):
                                       "LFM", "Barker", "FMCW",
                                       "WiFi", "LTE", "5G_NR", "Zigbee",
                                       "LoRa"]
-        self.selected_modulations = set(self.modulations_available)  # All selected by default
+        # Only pre-select what the current engine can actually generate, so a
+        # run without MATLAB does not queue up the toolbox-backed families and
+        # then report them as failures. They stay listed and can be ticked
+        # deliberately.  LoRa is closed-form, so it is never unavailable.
+        self._unavailable = unavailable_modulations(getattr(parent, "matlab", None))
+        self.selected_modulations = {m for m in self.modulations_available
+                                     if m not in self._unavailable}
 
         # M values for minimal test: just 1-2 M values per modulation
         self.test_m_values = {
@@ -57,8 +64,11 @@ class QuickTestDataDialog(QDialog):
         # Checkboxes for each modulation
         self.mod_checkboxes = {}
         for mod in self.modulations_available:
-            chk = QCheckBox(mod)
-            chk.setChecked(True)
+            blocked = self._unavailable.get(mod)
+            chk = QCheckBox(f"{mod}  (needs MATLAB)" if blocked else mod)
+            chk.setChecked(mod not in self._unavailable)
+            if blocked:
+                chk.setToolTip(f"Requires MATLAB and the {blocked}.")
             chk.stateChanged.connect(lambda state, m=mod: self._update_selection(m, state))
             self.mod_checkboxes[mod] = chk
             layout.addWidget(chk)
@@ -119,6 +129,8 @@ class BatchGenerationConfigDialog(QDialog):
         self.modulations = ["PAM", "QAM", "PSK", "FSK", "FHSS",
                             "LFM", "Barker", "FMCW", "WiFi", "LTE", "5G_NR",
                             "Zigbee", "LoRa"]
+        # See QuickTestDataDialog: default to what this engine can produce.
+        self._unavailable = unavailable_modulations(getattr(parent, "matlab", None))
 
         # Default M values for each modulation
         self.default_m_values = {
@@ -168,7 +180,7 @@ class BatchGenerationConfigDialog(QDialog):
         for mod in self.modulations:
             wf_defaults = self._waveform_defaults.get(mod, {})
             self.config[mod] = {
-                'enabled': True,
+                'enabled': mod not in self._unavailable,
                 'M_values': self.default_m_values[mod].copy(),
                 'fs_override': wf_defaults.get('fs_override', None),
                 'fc_override': wf_defaults.get('fc_override', None),
@@ -585,7 +597,11 @@ class WaveformSelectionTab(QWidget):
 
         data = self.current_data
         fs = self.current_fs
-        sps = int(fs * self.Tsymb)
+        # round(), not int(): fs * Tsymb routinely lands just below a whole
+        # number (the UI's own 0.10 MHz at 10 us gives 0.9999999999999999),
+        # which int() truncates to 0.  demodulate_to_symbols then slices with
+        # sps as a step, and a zero step raises.  Matches WaveformConfig.sps.
+        sps = max(1, int(round(fs * self.Tsymb)))
 
         t = np.arange(len(data)) / fs * 1e6
 
@@ -643,11 +659,8 @@ class WaveformSelectionTab(QWidget):
             if fc >= fs / 2:
                 raise ValueError(f"Invalid parameters: fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
 
-            # Validate: fs * Tsymb must be an integer (samples per symbol)
-            sps = fs * Tsymb
-            if abs(sps - round(sps)) > 1e-9:
-                raise ValueError(f"Invalid parameters: fs * Tsymb = {sps:.6f} must be an integer (samples per symbol)")
-
+            # No samples-per-symbol check here: a fractional fs * Tsymb is
+            # supported now, and WaveformConfig validates whatever remains.
             from mixedsignal_gui.backend.waveform_pipeline import WaveformPipeline
             pipeline = WaveformPipeline(self.matlab)
 

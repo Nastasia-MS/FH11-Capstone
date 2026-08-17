@@ -567,6 +567,10 @@ class EvaluateModelTab(QWidget):
                 num_classes = meta.get('num_classes', 2)
                 signal_length = meta.get('signal_length', 256)
                 in_channels = meta.get('input_channels', 1)
+                # Architecture-shaping hyperparameters, absent from models
+                # saved before they were recorded — an empty dict then gives
+                # the library defaults those models were actually built with.
+                hparams = meta.get('model_hparams') or {}
                 if meta.get('class_labels'):
                     self.class_labels = meta['class_labels']
             else:
@@ -574,10 +578,11 @@ class EvaluateModelTab(QWidget):
                 num_classes = 2
                 signal_length = 256
                 in_channels = 1
+                hparams = {}
 
             # Get current device setting
             device = self.get_device()
-            
+
             # Load model to the correct device
             state_dict = torch.load(filepath, map_location=device, weights_only=True)
             model = get_model(
@@ -585,6 +590,7 @@ class EvaluateModelTab(QWidget):
                 num_classes=num_classes,
                 input_size=signal_length,
                 in_channels=in_channels,
+                **hparams,
             )
             model.load_state_dict(state_dict)
             model.to(device)
@@ -756,13 +762,8 @@ class EvaluateModelTab(QWidget):
                 f"fc={fc:.2e} Hz must be < fs/2={fs/2:.2e} Hz")
             return
 
-        # Validate: fs * Tsymb must be an integer (samples per symbol)
-        sps_raw = fs * tsymb
-        if abs(sps_raw - round(sps_raw)) > 1e-9:
-            QMessageBox.warning(
-                self, "Invalid Parameters",
-                f"fs × Tsymb = {sps_raw:.6f} must be an integer (samples per symbol)")
-            return
+        # No samples-per-symbol check here: a fractional fs * Tsymb is
+        # supported now, and WaveformConfig validates whatever remains.
 
         # --- Generate waveform via WaveformPipeline ---
         try:
@@ -810,12 +811,20 @@ class EvaluateModelTab(QWidget):
         target: 'generate' updates the Generate & Classify tab,
                 'channel' updates the Channel Test tab.
         """
-        from mixedsignal_gui.backend.trainer import TrainerThread
+        from mixedsignal_gui.backend.trainer import TrainerThread, pack_multichannel
         target_len = TrainerThread.TARGET_LENGTH
+
+        # A multi-antenna capture is packed the same way the trainer packed it,
+        # rather than flattened — flattening kept only antenna 0 and then read
+        # its Q as though it were antenna 1.
+        arr = np.asarray(data)
+        if arr.ndim == 2 and arr.shape[0] <= 64:
+            X = pack_multichannel(arr, target_len)[np.newaxis]
+            return self._run_model(X, target)
 
         # Keep the native dtype: casting to float32 here used to discard Q
         # before the IQ branch could ever see it.
-        raw = np.asarray(data).ravel()
+        raw = arr.ravel()
         if len(raw) > target_len:
             raw = raw[:target_len]
         elif len(raw) < target_len:
@@ -844,6 +853,10 @@ class EvaluateModelTab(QWidget):
             # receiver front-end would deliver.
             X = np.real(raw).astype(np.float32)[np.newaxis, np.newaxis, :]
 
+        self._run_model(X, target)
+
+    def _run_model(self, X, target='generate'):
+        """Run the loaded model on a prepared (1, C, L) array and show the result."""
         tensor = torch.from_numpy(X).to(self.get_device())
         self.model.eval()
         with torch.no_grad():

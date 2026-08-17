@@ -3,6 +3,7 @@ import numpy as np
 import os
 import time
 import json
+import traceback
 import concurrent.futures
 
 import torch
@@ -15,6 +16,39 @@ from .torch_models import get_model
 
 # Models that expect 2-channel IQ input
 IQ_MODELS = {'ResNet1DOptimized'}
+
+
+def pack_multichannel(a, target_len: int) -> np.ndarray:
+    """Lay a multi-antenna capture out as model input channels.
+
+    ``a`` is ``(n_ant, L)`` as produced by the antenna-array option in the
+    stochastic and ray-tracing augmentations, which returns complex64.
+
+    Complex input becomes ``2 * n_ant`` real channels ordered
+    ``[Re(a0), Im(a0), Re(a1), Im(a1), ...]``; real input stays ``n_ant``
+    channels.  For a single antenna the complex case is exactly ``[I, Q]``,
+    the same layout the 1-D path produces, so the two agree by construction.
+
+    This lives here, and is imported by both tabs, because the layout used to
+    be re-derived in three places and they disagreed: the trainer cast the
+    array to float32 (discarding Q outright) while the tabs flattened it, kept
+    only antenna 0, and split *its* real and imaginary parts into the two
+    channels.  A 2-antenna model trained at 100% then scored 50% at inference
+    with no error, because the channel count still matched.
+    """
+    a = np.asarray(a)
+    if a.ndim == 1:
+        a = a[np.newaxis, :]
+    n_ant = a.shape[0]
+    L = min(a.shape[-1], target_len)
+    if np.iscomplexobj(a):
+        out = np.zeros((2 * n_ant, target_len), dtype=np.float32)
+        out[0::2, :L] = np.real(a[:, :L])
+        out[1::2, :L] = np.imag(a[:, :L])
+    else:
+        out = np.zeros((n_ant, target_len), dtype=np.float32)
+        out[:, :L] = a[:, :L]
+    return out
 
 
 class TrainerThread(QThread):
@@ -46,6 +80,8 @@ class TrainerThread(QThread):
         # Use provided device parameter instead of auto-detecting
         self.device = torch.device(device)
         self._stop = False
+        # Why the run produced no model, for the UI to show.  None on success.
+        self.error = None
         
         if self.device.type == 'cuda':
             if torch.cuda.is_available():
@@ -177,20 +213,23 @@ class TrainerThread(QThread):
             return
 
         if is_multi_channel:
-            # Multi-channel: stack as (batch, num_channels, target_len)
-            num_ch = X_list[0].shape[0]
-            X = np.zeros((len(X_list), num_ch, target_len), dtype=np.float32)
-            for i, a in enumerate(X_list):
-                if a.ndim == 1:
-                    # Mixed: treat 1D as single-channel, replicate
-                    L = min(len(a), target_len)
-                    for c in range(num_ch):
-                        X[i, c, :L] = a[:L].astype(np.float32)
-                else:
-                    L = min(a.shape[-1], target_len)
-                    X[i, :, :L] = a[:, :L].astype(np.float32)
-            input_channels = num_ch
-            print(f"Multi-channel mode: {num_ch} channels, {target_len} samples")
+            # Multi-channel: stack as (batch, num_channels, target_len).
+            # pack_multichannel keeps quadrature — this used to cast straight
+            # to float32, discarding Q with only a ComplexWarning.
+            packed = [pack_multichannel(a, target_len) for a in X_list]
+            channel_counts = {p.shape[0] for p in packed}
+            if len(channel_counts) > 1:
+                raise ValueError(
+                    f"Mixed channel counts in one training set: {sorted(channel_counts)}. "
+                    f"Every file must have the same number of antennas, and be "
+                    f"consistently real or complex.")
+            X = np.stack(packed)
+            input_channels = X.shape[1]
+            was_complex = any(np.iscomplexobj(a) for a in X_list)
+            note = (f" ({input_channels // 2} antenna(s) x I/Q)"
+                    if was_complex else "")
+            print(f"Multi-channel mode: {input_channels} channels{note}, "
+                  f"{target_len} samples")
         else:
             # Pad/truncate to target length.  The buffer must stay complex when
             # the data is: casting to float32 here silently dropped Q, which
@@ -274,7 +313,10 @@ class TrainerThread(QThread):
             eta_min=self.lr * 0.01
         )
 
-        # Training loop
+        # Training loop.  epochs_done separates "finished or was stopped" from
+        # "blew up", because only the first is worth saving.
+        epochs_done = 0
+        train_error = None
         try:
             for epoch in range(self.epochs):
                 if self._stop:
@@ -350,9 +392,27 @@ class TrainerThread(QThread):
 
                 # Emit progress
                 self.progress.emit(epoch + 1, self.epochs, train_loss, val_loss, train_acc, val_acc)
+                epochs_done = epoch + 1
 
         except Exception as e:
+            train_error = e
             print(f"Training failed: {e}")
+            traceback.print_exc()
+
+        # A run that raised has weights that mean nothing — often the random
+        # initialisation, if it died in the first batch.  Saving them anyway
+        # produced a .pth with a full metadata sidecar and a green
+        # "Complete - saved", which the Evaluate and Inference tabs then loaded
+        # as a trained model.  Report the failure instead; the training tab
+        # already handles an empty path as "no model saved".
+        if train_error is not None or epochs_done == 0:
+            reason = (f"{type(train_error).__name__}: {train_error}"
+                      if train_error is not None else
+                      "no epoch completed")
+            self.error = reason
+            print(f"Not saving a model: {reason}")
+            self.finished.emit("")
+            return
 
         # Save model + metadata
         out_dir = self.save_dir if self.save_dir else os.path.join(os.getcwd(), 'models')
@@ -377,6 +437,11 @@ class TrainerThread(QThread):
                 "num_classes": num_classes,
                 "input_channels": input_channels,
                 "signal_length": signal_len,
+                # Without these the tabs rebuild the model with library
+                # defaults, so anything trained at a non-default base_filters
+                # could never be loaded again — it failed with dozens of size
+                # mismatches inside load_state_dict.
+                "model_hparams": dict(self.model_hparams),
                 "timestamp": timestamp,
                 "training_data_root": common_root,
                 "training_class_dirs": source_dirs,
