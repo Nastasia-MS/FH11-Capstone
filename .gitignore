@@ -17,16 +17,12 @@ datasets/
 models/
 
 # Paper drafts and figures — kept local, not part of the toolkit release
-*.tex
-*.pdf
+MILCOM/
+
+# LaTeX build products, wherever they land
 *.aux
-*.log
-*.out
 *.bbl
 *.blg
+*.log
+*.out
 *.synctex.gz
-Milcom*
-RT.png
-training.png
-eval.png
-Diagram.png
